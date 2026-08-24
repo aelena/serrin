@@ -23,6 +23,7 @@ from .export import MappingConfig, build_piece, write_json
 from .ingest import IngestError, ingest_csv
 from .scales import SCALE_BANK, resolve
 from .stream import MAX_VOICES
+from .tempo import NOTE_FRACTIONS, SUBDIVISIONS, Tempo, TempoError
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +62,43 @@ def _envelope_from_args(args, chain: Chain) -> Envelope:
     return Envelope.constant(1.0)
 
 
+def _tempo_from_args(args, ingest_opts: dict) -> Tempo:
+    """Precedence: CLI tempo > CLI rate > preset tempo > preset rate > default.
+
+    Both units describe the same grid, so whichever the author reached for last
+    wins outright rather than being merged -- half a tempo from the flags and
+    half from the preset would be nobody's intent.
+    """
+    if getattr(args, "tempo", None):
+        grid = Tempo.parse(args.tempo)
+    elif getattr(args, "rate", None):
+        grid = Tempo.from_rate(args.rate)
+    elif ingest_opts.get("tempo"):
+        grid = Tempo.parse(ingest_opts["tempo"])
+    elif ingest_opts.get("rate"):
+        grid = Tempo.from_rate(ingest_opts["rate"])
+    else:
+        grid = Tempo()
+
+    # The finer-grained flags refine whatever came back, so `--swing 0.3` alone
+    # is meaningful without having to restate the tempo.
+    overrides = {}
+    if getattr(args, "subdivision", None):
+        overrides["subdivision"] = args.subdivision
+    if getattr(args, "swing", None) is not None:
+        overrides["swing"] = args.swing
+    if getattr(args, "beats_per_bar", None):
+        overrides["beats_per_bar"] = args.beats_per_bar
+    if overrides:
+        grid = Tempo(
+            bpm=overrides.get("bpm", grid.bpm),
+            subdivision=overrides.get("subdivision", grid.subdivision),
+            swing=overrides.get("swing", grid.swing),
+            beats_per_bar=overrides.get("beats_per_bar", grid.beats_per_bar),
+        )
+    return grid
+
+
 def _mapping_from_args(args, chain: Chain) -> MappingConfig:
     cfg = MappingConfig.from_json(chain.mapping)
     if args.scale:
@@ -88,7 +126,7 @@ def cmd_render(args) -> int:
         bit_depth=args.bit_depth or ingest_opts.get("bit_depth", 8),
         granularity=args.granularity or ingest_opts.get("granularity", 1),
         aggregation=args.aggregation or ingest_opts.get("aggregation", "mean"),
-        rate=args.rate or ingest_opts.get("rate", 8.0),
+        tempo=_tempo_from_args(args, ingest_opts),
         log_scale=args.log_scale or bool(ingest_opts.get("log_scale", False)),
         limit=args.limit,
     )
@@ -116,6 +154,7 @@ def cmd_render(args) -> int:
         mode=mode,
         loop_policy=loop_policy,
         voice_entry=voice_entry,
+        delay_note=args.delay_note or chain.piece.get("delay_note", "1/8."),
     )
 
     out_audio = Path(args.out_audio)
@@ -126,10 +165,18 @@ def cmd_render(args) -> int:
     print(f"label       {piece.meta['label']}")
     print(f"seed        {seed}")
     print(f"fingerprint {piece.meta['fingerprint']}")
+    print(f"tempo       {transformed.tempo.describe()}")
     print(
         f"stream      {transformed.n_voices} voices x {transformed.length} frames "
-        f"@ {transformed.rate}Hz = {transformed.duration:.1f}s"
+        f"= {transformed.duration:.1f}s / {transformed.bars:.1f} bars"
     )
+    if "lfsr" in transformed.meta:
+        lfsr = transformed.meta["lfsr"]
+        kind = "maximal" if lfsr["maximal"] else "short"
+        print(
+            f"lfsr        taps {lfsr['taps']} -- {kind} period "
+            f"{lfsr['period_frames']} frames ({lfsr['period_seconds']}s)"
+        )
     print(f"mode        {mode} / loop={loop_policy} / entry={voice_entry}")
     print(f"audio  ->   {out_audio}  ({audio_bytes / 1024:.1f} KiB)")
     print(f"visual ->   {out_visual}  ({visual_bytes / 1024:.1f} KiB)")
@@ -148,7 +195,7 @@ def cmd_inspect(args) -> int:
         columns=_split_columns(args.columns),
         bit_depth=args.bit_depth or 8,
         granularity=args.granularity or 1,
-        rate=args.rate or 8.0,
+        tempo=_tempo_from_args(args, {}),
         limit=args.limit,
     )
     print(stream.describe())
@@ -247,7 +294,24 @@ def build_parser() -> argparse.ArgumentParser:
     render.add_argument("--bit-depth", type=int, help="bits per value (default 8)")
     render.add_argument("--granularity", type=int, help="rows per frame (default 1)")
     render.add_argument("--aggregation", choices=["mean", "max", "min", "sum", "first", "last", "range"])
-    render.add_argument("--rate", type=float, help="frames per second (default 8)")
+    render.add_argument("--rate", type=float, help="frames per second; --tempo is usually clearer")
+    render.add_argument(
+        "--tempo",
+        help="musical grid: '120', '96/8' (BPM/subdivision), '128/16+0.3' (with swing)",
+    )
+    render.add_argument(
+        "--subdivision",
+        type=int,
+        choices=list(SUBDIVISIONS),
+        help="note value of one frame: 4=quarter, 8=eighth, 16=sixteenth (default 16)",
+    )
+    render.add_argument("--swing", type=float, help="0 = straight, 1 = triplet feel")
+    render.add_argument("--beats-per-bar", type=int, help="metre numerator (default 4)")
+    render.add_argument(
+        "--delay-note",
+        choices=sorted(NOTE_FRACTIONS),
+        help="tempo-synced delay time the runtime should start on (default 1/8.)",
+    )
     render.add_argument("--log-scale", action="store_true", help="log-normalize on ingest")
     render.add_argument("--limit", type=int, help="read at most N rows")
     render.add_argument("--seed", type=int, help="override the seed")
@@ -278,6 +342,10 @@ def build_parser() -> argparse.ArgumentParser:
     inspect.add_argument("--bit-depth", type=int)
     inspect.add_argument("--granularity", type=int)
     inspect.add_argument("--rate", type=float)
+    inspect.add_argument("--tempo")
+    inspect.add_argument("--subdivision", type=int, choices=list(SUBDIVISIONS))
+    inspect.add_argument("--swing", type=float)
+    inspect.add_argument("--beats-per-bar", type=int)
     inspect.add_argument("--limit", type=int)
     inspect.add_argument("--head", type=int, default=16, help="print N frames per voice")
     inspect.set_defaults(func=cmd_inspect)
@@ -312,7 +380,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except (IngestError, ValueError, FileNotFoundError) as exc:
+    except (IngestError, TempoError, ValueError, FileNotFoundError) as exc:
         print(f"serrin: {exc}", file=sys.stderr)
         return 2
 

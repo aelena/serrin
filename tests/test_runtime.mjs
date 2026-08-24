@@ -27,6 +27,7 @@ const mod = (rel) => pathToFileURL(path.join(root, rel)).href;
 const { Reader, hash32, rng } = await import(mod('web/js/reader.js'));
 const { Envelope, activeVoiceCount, voiceGates, envelopeFromArchetype, ReactiveIntensity } =
   await import(mod('web/js/envelope.js'));
+const { Tempo, NOTE_FRACTIONS } = await import(mod('web/js/tempo.js'));
 
 let passed = 0;
 let failed = 0;
@@ -215,6 +216,97 @@ test('reactive intensity rises on spikes and settles on calm (5.1-B)', () => {
 });
 
 // ---------------------------------------------------------------------------
+console.log('tempo');
+
+test('the old default is 120 BPM in sixteenths', () => {
+  assert.equal(new Tempo().rate, 8);
+  assert.equal(new Tempo({ bpm: 120, subdivision: 16 }).rate, 8);
+});
+
+test('rate round-trips', () => {
+  for (const rate of [2, 4, 6, 8, 12]) {
+    assert.ok(Math.abs(Tempo.fromRate(rate).rate - rate) < 1e-9);
+  }
+});
+
+test('tempo is read from the export', () => {
+  const tempo = Tempo.fromMeta(audioDoc.meta);
+  assert.ok(tempo.bpm > 0);
+  assert.ok(
+    Math.abs(tempo.rate - audioDoc.meta.rate) < 1e-6,
+    `tempo says ${tempo.rate} fps but meta.rate says ${audioDoc.meta.rate}`,
+  );
+});
+
+test('a render without a tempo block still yields a tempo', () => {
+  // Older exports carry only a rate; recovering one keeps its absence from
+  // becoming a special case everywhere downstream.
+  assert.ok(Math.abs(Tempo.fromMeta({ rate: 6 }).rate - 6) < 1e-9);
+});
+
+test('swing only moves offbeats and never reorders frames', () => {
+  for (const swing of [0, 0.25, 0.5, 0.99, 1]) {
+    const tempo = new Tempo({ bpm: 140, subdivision: 16, swing });
+    assert.equal(tempo.swingOffset(0), 0);
+    assert.equal(tempo.swingOffset(2), 0);
+    const onsets = Array.from({ length: 64 }, (_, i) => tempo.onset(i));
+    for (let i = 1; i < onsets.length; i += 1) {
+      assert.ok(onsets[i] > onsets[i - 1], `swing ${swing} reordered frame ${i}`);
+    }
+  }
+});
+
+test('triplet swing splits the pair two to one', () => {
+  const tempo = new Tempo({ bpm: 120, subdivision: 16, swing: 1 });
+  const first = tempo.onset(1) - tempo.onset(0);
+  const second = tempo.onset(2) - tempo.onset(1);
+  assert.ok(Math.abs(first / second - 2) < 1e-9);
+});
+
+test('the reader applies swing to frame onsets', () => {
+  // The load-bearing integration: both engines time off Reader.frameOnset, so
+  // this is the single place the feel enters the system.
+  const reader = new Reader(audioDoc, visualDoc);
+  const straight = new Tempo({ bpm: 120, subdivision: 16 });
+  reader.tempo = new Tempo({ bpm: 120, subdivision: 16, swing: 1 });
+  assert.equal(reader.frameOnset(0), straight.onset(0));
+  assert.ok(reader.frameOnset(1) > straight.onset(1), 'offbeat was not pushed');
+  assert.equal(reader.frameOnset(2), straight.onset(2), 'downbeat moved');
+});
+
+test('speed scales the whole grid', () => {
+  const reader = new Reader(audioDoc, visualDoc);
+  const at1 = reader.frameOnset(32);
+  reader.speed = 2;
+  assert.ok(Math.abs(reader.frameOnset(32) - at1 / 2) < 1e-9);
+});
+
+test('note values are beat-relative', () => {
+  const tempo = new Tempo({ bpm: 120 });
+  assert.ok(Math.abs(tempo.noteSeconds('1/4') - 0.5) < 1e-9);
+  assert.ok(Math.abs(tempo.noteSeconds('1/8.') - 0.375) < 1e-9);
+  // Doubling the tempo halves every note value -- the point of a synced delay.
+  assert.ok(Math.abs(new Tempo({ bpm: 240 }).noteSeconds('1/4') - 0.25) < 1e-9);
+});
+
+test('positions read like a DAW', () => {
+  const tempo = new Tempo({ bpm: 120, subdivision: 16, beatsPerBar: 4 });
+  assert.equal(tempo.formatPosition(0), '1.1.1');
+  assert.equal(tempo.formatPosition(4), '1.2.1');
+  assert.equal(tempo.formatPosition(16), '2.1.1');
+  assert.equal(tempo.bars(32), 2);
+});
+
+test('with() changes one field and leaves the rest', () => {
+  const tempo = new Tempo({ bpm: 100, subdivision: 8, swing: 0.4, beatsPerBar: 3 });
+  const faster = tempo.with({ bpm: 150 });
+  assert.equal(faster.bpm, 150);
+  assert.equal(faster.subdivision, 8);
+  assert.equal(faster.swing, 0.4);
+  assert.equal(faster.beatsPerBar, 3);
+});
+
+// ---------------------------------------------------------------------------
 console.log('cross-check with the python side');
 
 test('python and js agree about voice activation', () => {
@@ -227,6 +319,47 @@ test('python and js agree about voice activation', () => {
   }
   for (const [intensity, count] of expected) {
     assert.equal(activeVoiceCount(intensity, 8), count, `mismatch at intensity ${intensity}`);
+  }
+});
+
+test('python and js agree about the tempo grid', () => {
+  // Two implementations of the same formulas. A drift between them would not
+  // fail anywhere -- the browser would just play a slightly different piece from
+  // the one the pipeline rendered.
+  const expected = JSON.parse(process.env.SERRIN_PY_TEMPO ?? 'null');
+  if (!expected) {
+    console.log('       (skipped: run via tests/run_all.py to compare against python)');
+    return;
+  }
+  for (const row of expected) {
+    const tempo = new Tempo({
+      bpm: row.bpm,
+      subdivision: row.subdivision,
+      swing: row.swing,
+      beatsPerBar: row.beats_per_bar,
+    });
+    assert.ok(Math.abs(tempo.rate - row.rate) < 1e-9, `rate mismatch at ${row.bpm}`);
+    row.onsets.forEach((onset, index) => {
+      assert.ok(
+        Math.abs(tempo.onset(index) - onset) < 1e-9,
+        `onset ${index} differs at ${row.bpm}/${row.subdivision}+${row.swing}`,
+      );
+    });
+    for (const [note, seconds] of Object.entries(row.notes)) {
+      assert.ok(
+        Math.abs(tempo.noteSeconds(note) - seconds) < 1e-9,
+        `note ${note} differs at ${row.bpm} BPM`,
+      );
+    }
+  }
+});
+
+test('the note-value tables match', () => {
+  const expected = JSON.parse(process.env.SERRIN_PY_NOTES ?? 'null');
+  if (!expected) return;
+  assert.deepEqual(Object.keys(NOTE_FRACTIONS).sort(), Object.keys(expected).sort());
+  for (const [note, value] of Object.entries(expected)) {
+    assert.ok(Math.abs(NOTE_FRACTIONS[note] - value) < 1e-12, `note ${note} differs`);
   }
 });
 

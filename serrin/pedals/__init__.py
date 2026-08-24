@@ -14,6 +14,8 @@ Every pedal in here obeys three rules:
 
 from __future__ import annotations
 
+import math
+
 from ..rng import Lfsr, Rng
 from ..scales import degree_to_semitone, resolve
 from ..stream import Stream
@@ -38,7 +40,7 @@ from .base import (  # noqa: F401  (re-exported)
     "Cyclic shift by N. N itself can oscillate (a discrete LFO over the shift).",
 )
 def caesar(stream: Stream, p: dict, rng: Rng) -> Stream:
-    lfo = Lfo(p["shift_lfo"], stream.rate, rng.split("caesar"))
+    lfo = Lfo(p["shift_lfo"], stream, rng.split("caesar"))
     span = stream.ceiling
     base = int(p["shift"])
     targets = _targets(stream, p["channels"])
@@ -94,13 +96,41 @@ def xor_mask(stream: Stream, p: dict, rng: Rng) -> Stream:
             out[c] = [v ^ (keys[i] & mask_bits) for i, v in enumerate(stream.data[c])]
         return stream.with_data(out)
 
-    # lfsr -- one generator per channel, each seeded off the pedal's substream,
-    # so channels buzz at the same period but out of phase with each other.
+    # lfsr -- one generator per channel, each seeded off the pedal's substream.
+    #
+    # Those seeds matter more than they look. A *primitive* polynomial has one
+    # cycle through all 2**n - 1 nonzero states, so every channel runs the same
+    # length and differs only in phase. A non-primitive one partitions the state
+    # space into several cycles of *different* lengths -- so with the document's
+    # [3, 1] taps one channel may buzz every 42 frames and its neighbour every
+    # 21. That is a feature (voices drift in and out of alignment) but it means
+    # "the period" is per-channel, and the pattern as a whole only repeats at the
+    # least common multiple of them.
     sub = rng.split("xor_mask/lfsr")
+    requested = list(p["taps"]) if p["taps"] else None  # null means "use the default"
+    periods: list[int] = []
+    taps: list[int] = []
+    maximal = True
     for c in targets:
-        lfsr = Lfsr(sub.next_u64(), list(p["taps"]), width=stream.bit_depth)
+        lfsr = _seed_lfsr(sub, requested, stream.bit_depth)
         out[c] = [v ^ lfsr.next() for v in stream.data[c]]
-    return stream.with_data(out)
+        periods.append(lfsr.period())
+        maximal = maximal and lfsr.is_maximal
+        taps = lfsr.taps
+
+    combined = math.lcm(*periods) if periods else 0
+    result = stream.with_data(out)
+    # The period is audible -- it is the loop length the mask repeats on -- so it
+    # is recorded rather than left for the author to infer by listening.
+    result.meta = dict(stream.meta)
+    result.meta["lfsr"] = {
+        "taps": taps,
+        "periods": periods,
+        "period_frames": combined,
+        "period_seconds": round(combined / stream.rate, 3) if stream.rate else None,
+        "maximal": maximal,
+    }
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +317,7 @@ def bitcrush(stream: Stream, p: dict, rng: Rng) -> Stream:
     base = int(p["target_bits"])
     if not 1 <= base <= width:
         raise PedalError(f"bitcrush.target_bits must be 1..{width}, got {base}")
-    lfo = Lfo(p["bits_lfo"], stream.rate, rng.split("bitcrush"))
+    lfo = Lfo(p["bits_lfo"], stream, rng.split("bitcrush"))
     targets = _targets(stream, p["channels"])
     out = [list(ch) for ch in stream.data]
     for c in targets:
@@ -365,6 +395,37 @@ def stutter_repeat(stream: Stream, p: dict, rng: Rng) -> Stream:
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+#: A channel whose LFSR returns to its seed this quickly is not producing noise.
+#: Period 1 is a fixed point -- the register emits one value forever, which turns
+#: `mask_source: lfsr` into `mask_source: const` without saying so.
+MIN_LFSR_PERIOD = 4
+_LFSR_SEED_ATTEMPTS = 8
+
+
+def _seed_lfsr(sub, taps, width: int) -> Lfsr:
+    """Seed an LFSR onto a cycle long enough to be worth hearing.
+
+    Non-primitive tap sets partition the state space into cycles of different
+    lengths, and some of those cycles are tiny: the design document's ``[3, 1]``
+    on 8 bits has cycles of length 1, 2, 21 and 42. A channel unlucky enough to
+    be seeded onto the length-1 cycle XORs against a constant for the whole
+    piece -- the same silent-degradation failure the tap fix was about, one level
+    up.
+
+    So candidate seeds are drawn until one lands on a real cycle. Deterministic:
+    the draws come from the pedal's own substream, so the same seed retries the
+    same way and the render still reproduces exactly.
+    """
+    candidate = None
+    for _ in range(_LFSR_SEED_ATTEMPTS):
+        candidate = Lfsr(sub.next_u64(), taps, width=width)
+        # A bounded probe -- "does it return within MIN_LFSR_PERIOD steps" -- not
+        # the full period, which would cost 2**width per attempt at 16 bits.
+        if candidate.period(limit=MIN_LFSR_PERIOD) < 0:
+            return candidate
+    return candidate  # every attempt was degenerate; the taps leave no choice
+
+
 def _targets(stream: Stream, channels) -> list[int]:
     """``None`` means every channel; otherwise resolve names/indices."""
     if channels is None:

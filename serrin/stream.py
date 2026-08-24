@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
+from .tempo import Tempo
+
 
 @dataclass
 class Stream:
@@ -22,10 +24,25 @@ class Stream:
     data: list[list[int]]
     #: Bits per value. Everything downstream masks to this.
     bit_depth: int = 8
-    #: Frames per second, so an LFO written as "0.1hz" means 0.1 Hz.
+    #: Frames per second, so an LFO written as "0.1hz" means 0.1 Hz. Kept as a
+    #: plain field because most of the pipeline only needs the number; `tempo`
+    #: below is the same fact with a musical name, and the two are reconciled in
+    #: __post_init__ so they can never disagree.
     rate: float = 8.0
+    #: The grid as a musician would say it. Derived from `rate` when not given,
+    #: so every stream has one and nothing downstream needs a None check.
+    tempo: Tempo | None = None
     #: Free-form breadcrumbs (source file, columns, aggregation) for the export.
     meta: dict = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # One of the two is authoritative and the other follows. An explicit
+        # tempo wins, because it carries strictly more information (swing and
+        # metre cannot be recovered from a frame rate).
+        if self.tempo is None:
+            self.tempo = Tempo.from_rate(self.rate)
+        else:
+            self.rate = self.tempo.rate
 
     # -- shape --------------------------------------------------------------
     @property
@@ -48,6 +65,11 @@ class Stream:
     @property
     def duration(self) -> float:
         return self.length / self.rate if self.rate else 0.0
+
+    @property
+    def bars(self) -> float:
+        """Length in bars -- the unit an intensity envelope is really drawn in."""
+        return self.tempo.bars(self.length)
 
     # -- copies -------------------------------------------------------------
     def with_data(self, data: list[list[int]]) -> "Stream":
@@ -91,8 +113,9 @@ class Stream:
 
     def describe(self) -> str:
         rows = [
-            f"{self.n_voices} voices x {self.length} frames @ {self.rate}Hz "
-            f"({self.duration:.1f}s), {self.bit_depth}-bit"
+            f"{self.n_voices} voices x {self.length} frames "
+            f"({self.duration:.1f}s, {self.bars:.1f} bars), {self.bit_depth}-bit",
+            f"  {self.tempo.describe()}",
         ]
         for i, name in enumerate(self.names):
             col = self.data[i]

@@ -92,6 +92,23 @@ export class Transport {
     this.lastFrame = null;
   }
 
+  /**
+   * Re-anchor the timeline after the grid changes underneath it.
+   *
+   * `startTime` fixes where frame 0 sounds, and every other onset is measured
+   * from it -- so moving the BPM slider silently moves every future onset,
+   * including ones already inside the lookahead window. Re-anchoring pins the
+   * *current* frame where it is and lets the new grid apply from there, which is
+   * what "change the tempo" is supposed to feel like. Without it the transport
+   * either stalls (onsets jumped forwards) or dumps a burst of frames at once
+   * (onsets jumped backwards).
+   */
+  retime() {
+    if (!this.audio.started) return;
+    this.startTime = this.audio.currentTime - this.reader.frameOnset(this.counter);
+    this.audio.syncDelay();
+  }
+
   seekNormalized(position) {
     const target = Math.max(0, Math.round(position * this.targetFrames));
     this.counter = target;

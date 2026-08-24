@@ -44,6 +44,7 @@
           <dt>seed</dt><dd id="fact-seed">—</dd>
           <dt>voices</dt><dd id="fact-voices">—</dd>
           <dt>frames</dt><dd id="fact-frames">—</dd>
+          <dt>position</dt><dd id="fact-position">—</dd>
           <dt>fingerprint</dt><dd id="fact-fingerprint">—</dd>
         </dl>
         <div class="row">
@@ -54,6 +55,46 @@
           <select id="ctl-preset"></select>
         </label>
         <p class="micro" id="preset-note"></p>
+      </section>
+
+      <section>
+        <h2>tempo</h2>
+        <p class="micro" id="tempo-readout">—</p>
+        <label>bpm <output id="out-bpm">120</output>
+          <input id="ctl-bpm" type="range" min="20" max="240" step="0.5" value="120" />
+        </label>
+        <label>one frame is
+          <select id="ctl-subdivision">
+            <option value="4">a quarter note</option>
+            <option value="6">a quarter triplet</option>
+            <option value="8">an eighth note</option>
+            <option value="12">an eighth triplet</option>
+            <option value="16" selected>a sixteenth note</option>
+            <option value="24">a sixteenth triplet</option>
+            <option value="32">a thirty-second note</option>
+          </select>
+        </label>
+        <label>swing <output id="out-swing">0.00</output>
+          <input id="ctl-swing" type="range" min="0" max="1" step="0.01" value="0" />
+        </label>
+        <label>beats per bar
+          <input id="ctl-beats-per-bar" type="number" min="1" max="16" step="1" value="4" />
+        </label>
+        <label>delay time
+          <select id="ctl-delay-note">
+            <option value="1/2">1/2</option>
+            <option value="1/4.">1/4 dotted</option>
+            <option value="1/4">1/4</option>
+            <option value="1/4t">1/4 triplet</option>
+            <option value="1/8." selected>1/8 dotted</option>
+            <option value="1/8">1/8</option>
+            <option value="1/8t">1/8 triplet</option>
+            <option value="1/16">1/16</option>
+            <option value="1/16t">1/16 triplet</option>
+            <option value="1/32">1/32</option>
+          </select>
+        </label>
+        <button id="ctl-tempo-reset">back to the rendered tempo</button>
       </section>
 
       <section>

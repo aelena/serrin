@@ -37,7 +37,7 @@
       "pedal": "bitcrush",
       "params": {
         "target_bits": 2,
-        "bits_lfo": "sample_hold:0.5hz"
+        "bits_lfo": "sample_hold:1bar"
       },
       "at_intensity": 0.6
     },
@@ -45,13 +45,18 @@
       "pedal": "caesar",
       "params": {
         "shift": 17,
-        "shift_lfo": "square:0.05hz:0.4"
+        "shift_lfo": "square:4bars:0.4"
       },
       "at_intensity": 0.7
     }
   ],
   "ingest": {
-    "rate": 12.0
+    "tempo": {
+      "bpm": 180,
+      "subdivision": 16,
+      "swing": 0.0,
+      "beats_per_bar": 4
+    }
   },
   "envelope": {
     "kind": "equation",
@@ -71,6 +76,7 @@
   "piece": {
     "mode": "closed",
     "loop": "pingpong",
-    "voice_entry": "variance"
+    "voice_entry": "variance",
+    "delay_note": "1/16"
   }
 }

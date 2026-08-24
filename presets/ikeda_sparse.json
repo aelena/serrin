@@ -30,7 +30,12 @@
   "ingest": {
     "granularity": 4,
     "aggregation": "mean",
-    "rate": 6.0
+    "tempo": {
+      "bpm": 90,
+      "subdivision": 16,
+      "swing": 0.0,
+      "beats_per_bar": 4
+    }
   },
   "envelope": {
     "kind": "equation",
@@ -48,6 +53,7 @@
   "piece": {
     "mode": "closed",
     "loop": "vary",
-    "voice_entry": "sparse"
+    "voice_entry": "sparse",
+    "delay_note": "1/4"
   }
 }

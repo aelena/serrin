@@ -74,6 +74,18 @@ const app = {
     this.envelope = envelope;
   },
 
+  /**
+   * Change the grid live.
+   *
+   * The reader holds the tempo because it owns frame timing; the transport has
+   * to be told, because every onset it has already computed was measured against
+   * the old grid.
+   */
+  setTempo(tempo) {
+    this.reader.tempo = tempo;
+    this.transport?.retime();
+  },
+
   setEntryStrategy(strategy) {
     this.entryStrategy = strategy;
     this.entryOrder = computeEntryOrder(this.reader, strategy);

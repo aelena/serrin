@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from serrin.envelope import active_voice_count  # noqa: E402
+from serrin.tempo import NOTE_FRACTIONS, Tempo  # noqa: E402
 
 
 def banner(title: str) -> None:
@@ -55,9 +56,34 @@ def js_suite() -> bool:
         print("  python -m serrin render -i data/monitoring.csv -c presets/gritty_01.json")
         return False
 
-    # The cross-check payload: (intensity, expected voice count) from Python.
+    # The cross-check payload, computed by Python for the Node suite to assert
+    # against: voice activation, and the tempo grid including swung onsets.
     gates = [[round(i / 20, 3), active_voice_count(i / 20, 8)] for i in range(21)]
-    env = {**os.environ, "SERRIN_PY_GATES": json.dumps(gates)}
+    grids = []
+    for bpm, subdivision, swing, beats in (
+        (120, 16, 0.0, 4),
+        (96, 8, 0.25, 4),
+        (140, 16, 1.0, 4),
+        (60, 4, 0.5, 3),
+    ):
+        tempo = Tempo(bpm=bpm, subdivision=subdivision, swing=swing, beats_per_bar=beats)
+        grids.append(
+            {
+                "bpm": bpm,
+                "subdivision": subdivision,
+                "swing": swing,
+                "beats_per_bar": beats,
+                "rate": tempo.rate,
+                "onsets": [tempo.onset(i) for i in range(16)],
+                "notes": {note: tempo.note_seconds(note) for note in NOTE_FRACTIONS},
+            }
+        )
+    env = {
+        **os.environ,
+        "SERRIN_PY_GATES": json.dumps(gates),
+        "SERRIN_PY_TEMPO": json.dumps(grids),
+        "SERRIN_PY_NOTES": json.dumps(NOTE_FRACTIONS),
+    }
 
     completed = subprocess.run(
         ["node", str(ROOT / "tests" / "test_runtime.mjs")],

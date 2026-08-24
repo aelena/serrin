@@ -287,6 +287,7 @@ def build_piece(
     mode: str = "closed",
     loop_policy: str = "vary",
     voice_entry: str = "variance",
+    delay_note: str = "1/8.",
 ) -> Piece:
     cfg = config or MappingConfig()
     env = envelope or Envelope.constant(1.0)
@@ -303,14 +304,21 @@ def build_piece(
         "seed": stream.meta.get("seed"),
         "fingerprint": fingerprint(stream),
         "rate": stream.rate,
+        # The grid, named. The runtime needs it for swing, tempo-synced delay
+        # and anything the panel wants to display in bars rather than seconds.
+        "tempo": stream.tempo.to_json(),
         "frames": stream.length,
         "duration": round(stream.duration, 3),
+        "bars": round(stream.bars, 3),
         "bit_depth": stream.bit_depth,
         "voices": stream.names,
         "voice_entry_order": voice_order(stream, voice_entry),
         "voice_entry_strategy": voice_entry,
         "mode": mode,
         "loop_policy": loop_policy,
+        # A starting position for the runtime's delay, in note values rather
+        # than seconds, so it stays on the grid if the tempo is changed live.
+        "delay_note": delay_note,
         "source": stream.meta.get("source"),
         "columns": stream.meta.get("columns"),
         "granularity": stream.meta.get("granularity", 1),

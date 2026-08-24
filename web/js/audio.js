@@ -119,6 +119,7 @@ export class AudioEngine {
     this.crushBits = 8; // 8 = effectively off
     this.delayMix = 0.22;
     this.filterCutoff = 9000;
+    this.delayNote = reader.meta.delay_note ?? '1/8.';
     this.soloVoice = null;
     this.mutes = new Set();
     // "Audio-vs-visual mapping balance" (4.5): audio's share of the weight.
@@ -147,10 +148,11 @@ export class AudioEngine {
     this.tone.frequency.value = this.filterCutoff;
     this.tone.Q.value = 0.7;
 
-    // Simple feedback delay. Time is one frame at the stream's own rate, so the
-    // echo lands on the data's grid instead of on an arbitrary musical one.
-    this.delay = ctx.createDelay(2.0);
-    this.delay.delayTime.value = Math.min(1.5, 3 / this.reader.rate);
+    // Simple feedback delay, timed in note values rather than seconds: a dotted
+    // eighth stays a dotted eighth when the author moves the BPM slider, which
+    // is the whole reason tempo exists as a named thing.
+    this.delay = ctx.createDelay(4.0);
+    this.delay.delayTime.value = this.delaySeconds();
     this.feedback = ctx.createGain();
     this.feedback.gain.value = 0.34;
     this.delaySend = ctx.createGain();
@@ -241,6 +243,24 @@ export class AudioEngine {
   setCrush(bits, sticky = true) {
     if (sticky) this.crushBits = bits;
     if (this.crusher) this.crusher.curve = crushCurve(bits);
+  }
+
+  /** Delay time in seconds for the current note value and tempo. */
+  delaySeconds() {
+    return Math.min(3.9, this.reader.tempo.noteSeconds(this.delayNote));
+  }
+
+  /** Re-time the delay -- called when the note value or the tempo changes. */
+  syncDelay() {
+    if (!this.delay) return;
+    // A ramp, not a jump: retiming a delay line instantaneously pitches whatever
+    // is still echoing inside it, which sounds like a fault rather than a choice.
+    this.delay.delayTime.setTargetAtTime(this.delaySeconds(), this.currentTime, 0.08);
+  }
+
+  setDelayNote(note) {
+    this.delayNote = note;
+    this.syncDelay();
   }
 
   setDelayMix(value) {

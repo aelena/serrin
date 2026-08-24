@@ -15,6 +15,8 @@
  *   * stream exhaustion -- author's choice, four policies, default `vary`.
  */
 
+import { Tempo } from './tempo.js';
+
 /** Deterministic 32-bit hash -> the JS half of the seed-reproducibility promise. */
 export function hash32(value, salt = 0) {
   let h = (2166136261 ^ salt) >>> 0;
@@ -53,7 +55,9 @@ export class Reader {
     this.visual = visualDoc;
     this.meta = audioDoc.meta ?? {};
 
-    this.rate = this.meta.rate ?? 8;
+    // The grid is the tempo's business now; `rate` is kept as a read-only
+    // convenience because plenty of call sites only want the number.
+    this.tempo = Tempo.fromMeta(this.meta);
     this.length = this.meta.frames ?? (audioDoc.voices?.[0]?.freq?.length ?? 0);
     this.voiceCount = audioDoc.voices?.length ?? 0;
     this.names = this.meta.voices ?? audioDoc.voices.map((v) => v.name);
@@ -78,8 +82,16 @@ export class Reader {
     this._varyCache = new Map();
   }
 
+  get rate() {
+    return this.tempo.rate;
+  }
+
   get duration() {
     return this.length / this.rate;
+  }
+
+  get bars() {
+    return this.tempo.bars(this.length);
   }
 
   /** Frames elapsed after `seconds` of transport time, at the current speed. */
@@ -87,9 +99,16 @@ export class Reader {
     return seconds * this.rate * this.speed;
   }
 
-  /** Seconds of transport time at which frame `n` begins. */
+  /**
+   * Seconds of transport time at which frame `n` begins.
+   *
+   * The single place swing is applied. Both engines derive their timing from
+   * this one expression -- the audio scheduler directly, the visual loop by
+   * releasing frames as their audio onsets arrive -- so the feel lands on the
+   * picture as well as the sound, with no second implementation to keep in step.
+   */
   frameOnset(n) {
-    return n / (this.rate * this.speed);
+    return this.tempo.onset(n, this.speed);
   }
 
   /**

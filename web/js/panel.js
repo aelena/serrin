@@ -21,6 +21,7 @@ import {
   envelopeFromArchetype,
   envelopeFromEquation,
 } from './envelope.js';
+import { Tempo } from './tempo.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -53,6 +54,7 @@ export class Panel {
     // Speed goes the other way: the reader may already carry a ?speed= from the
     // URL, and re-applying a stale slider position would silently discard it.
     $('ctl-speed').value = String(app.reader.speed);
+    this._syncTempoControls();
     // Everything else re-applies the slider positions the author is looking at;
     // a new AudioEngine starts on its own defaults and would otherwise ignore
     // them.
@@ -60,7 +62,29 @@ export class Panel {
     this._paintFacts();
     this._paintVoices();
     this._paintPedals();
+    this._paintTempo();
     this._paintEnvelope();
+  }
+
+  /** Push the loaded piece's tempo into the controls without firing handlers. */
+  _syncTempoControls() {
+    const tempo = this.app.reader.tempo;
+    $('ctl-bpm').value = String(tempo.bpm);
+    $('out-bpm').textContent = tempo.bpm.toFixed(1);
+    $('ctl-swing').value = String(tempo.swing);
+    $('out-swing').textContent = tempo.swing.toFixed(2);
+    $('ctl-subdivision').value = String(tempo.subdivision);
+    $('ctl-beats-per-bar').value = String(tempo.beatsPerBar);
+    $('ctl-delay-note').value = this.app.audio.delayNote;
+  }
+
+  _paintTempo() {
+    const app = this.app;
+    const tempo = app.reader.tempo;
+    const delaySeconds = tempo.noteSeconds(app.audio.delayNote);
+    $('tempo-readout').textContent =
+      `${tempo.describe()} · ${app.reader.bars.toFixed(1)} bars · ` +
+      `delay ${app.audio.delayNote} = ${(delaySeconds * 1000).toFixed(0)} ms`;
   }
 
   toggle(force) {
@@ -97,6 +121,37 @@ export class Panel {
     }
     presetSelect.value = app.presetId ?? app.presets[0]?.id ?? '';
     presetSelect.addEventListener('change', () => app.loadPreset(presetSelect.value));
+
+    // -- tempo. Every control here goes through app.setTempo, which re-anchors
+    // the transport; changing the grid without that makes the scheduler either
+    // stall or dump a burst of frames.
+    this._range('ctl-bpm', 'out-bpm', (v) => {
+      app.setTempo(app.reader.tempo.with({ bpm: v }));
+      this._paintTempo();
+      return `${v.toFixed(1)}`;
+    });
+    this._range('ctl-swing', 'out-swing', (v) => {
+      app.setTempo(app.reader.tempo.with({ swing: v }));
+      this._paintTempo();
+      return v.toFixed(2);
+    });
+    $('ctl-subdivision').addEventListener('change', (e) => {
+      app.setTempo(app.reader.tempo.with({ subdivision: Number(e.target.value) }));
+      this._paintTempo();
+    });
+    $('ctl-beats-per-bar').addEventListener('change', (e) => {
+      app.setTempo(app.reader.tempo.with({ beatsPerBar: Number(e.target.value) }));
+      this._paintTempo();
+    });
+    $('ctl-delay-note').addEventListener('change', (e) => {
+      app.audio.setDelayNote(e.target.value);
+      this._paintTempo();
+    });
+    $('ctl-tempo-reset').addEventListener('click', () => {
+      app.setTempo(Tempo.fromMeta(app.reader.meta));
+      this._syncTempoControls();
+      this._paintTempo();
+    });
 
     // -- clock
     this._range('ctl-speed', 'out-speed', (v) => {
@@ -211,8 +266,8 @@ export class Panel {
     $('fact-seed').textContent = String(meta.seed ?? '—');
     $('fact-voices').textContent = `${this.app.reader.voiceCount} / 8`;
     $('fact-frames').textContent =
-      `${this.app.reader.length} @ ${this.app.reader.rate}Hz ` +
-      `(${this.app.reader.duration.toFixed(1)}s)`;
+      `${this.app.reader.length} (${this.app.reader.duration.toFixed(1)}s, ` +
+      `${this.app.reader.bars.toFixed(1)} bars)`;
     $('fact-fingerprint').textContent = meta.fingerprint ?? '—';
     $('preset-note').textContent =
       this.app.presets.find((p) => p.id === this.app.presetId)?.note ?? '';
@@ -418,6 +473,10 @@ export class Panel {
     for (const entry of this.pedalRows ?? []) {
       entry.row.classList.toggle('on', this.app.intensity >= entry.threshold);
     }
+
+    const counter = this.app.transport.counter;
+    $('fact-position').textContent =
+      `${this.app.reader.tempo.formatPosition(counter)}  (frame ${counter})`;
 
     const progress = this.app.transport.progress();
     if (progress !== null && document.activeElement !== $('ctl-position')) {

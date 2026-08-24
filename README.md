@@ -80,9 +80,44 @@ throws absolute magnitude away deliberately.
 | `--columns` | names or indices, in order (defines the voices) |
 | `--bit-depth` | bits per value before the chain (8 by default, so XOR/Caesar are byte ops) |
 | `--granularity` | rows per frame; `--aggregation mean\|max\|min\|sum\|first\|last\|range` |
-| `--rate` | frames per second — this is what an LFO's `hz` is measured against |
+| `--tempo` | the grid, musically: `120`, `96/8` (BPM/subdivision), `128/16+0.3` (with swing) |
+| `--subdivision` | note value of one frame: 4=quarter, 8=eighth, 16=sixteenth |
+| `--swing` | 0 straight, 1 triplet feel |
+| `--rate` | frames per second, if you would rather not think in BPM |
 | `--log-scale` | log-normalize on the way in, for bursty data |
 | `--limit` | read at most N rows |
+
+### Tempo
+
+The frame grid has a musical name. This does **not** change the tick model —
+one row is still one frame, decided by the data — it only names the spacing,
+which is the one thing a CSV row has no opinion about.
+
+The two framings were never opposed: 8 frames per second *is* sixteenth notes at
+120 BPM. That was always serrin's default; it just had no name.
+
+```bash
+python -m serrin render -i data.csv --tempo 96/8        # 96 BPM in eighths
+python -m serrin render -i data.csv --tempo 128/16+0.3  # with swing
+python -m serrin render -i data.csv --rate 6            # still fine; infers 90 BPM
+```
+
+Naming it buys three things:
+
+- **LFOs in beats and bars.** `sine:4beats`, `saw:1bar`, `triangle:1/2beat`
+  stay locked to the grid at any tempo; `sine:0.1hz` still means hertz and
+  drifts across it. Both are useful — the first is a synced tremolo, the second
+  is a slow sweep that does not care what the music is doing.
+- **A delay in note values.** Dotted eighth stays a dotted eighth when the BPM
+  slider moves, instead of being "about three frames".
+- **Swing.** Offbeat frames are pushed later; `swing: 1` is a triplet feel
+  (the pair splits 2:1). Applied in exactly one place —
+  `Reader.frameOnset` — so the feel lands on the *picture* as well as the
+  sound, with no second implementation to keep in step.
+
+Positions are reported as `bar.beat.step`, and the panel edits BPM,
+subdivision, swing, metre and delay time live. Changing the grid mid-playback
+re-anchors the transport so the current frame stays where it is.
 
 ### The pedals
 
@@ -105,10 +140,19 @@ starts needing a lot of logic, it is two pedals.
 Every pedal preserves voice count, channel length and bit depth. `stutter_repeat`
 is the sole exception on length — making the stream stall is its whole point.
 
-**LFOs.** Any parameter ending `_lfo` takes `shape:freqhz[:depth]`, e.g.
-`sine:0.1hz`, `square:0.05hz:0.4`, `sample_hold:0.5hz`. Shapes: `sine`,
-`triangle`, `square`, `saw`, `random`, `sample_hold`. Note that a fast LFO on a
-slow stream aliases — one cycle per eight frames only ever samples eight phases.
+**LFSR taps.** `xor_mask` writes taps as polynomial exponents with the `+ 1`
+implicit, so `[3, 1]` means `x^8 + x^3 + x + 1` and normalizes to `[3, 1, 0]`.
+Bit 0 is always included, which is what makes the state map invertible and the
+register mathematically unable to reach the all-zero dead state. Omit `taps`
+entirely to get a *primitive* polynomial — a maximal-length run of 2ⁿ−1 before
+it repeats. Non-primitive taps are shorter and buzzier on purpose; `render`
+reports the period it actually got, because the period is audible.
+
+**LFOs.** Any parameter ending `_lfo` takes `shape:period[:depth]`. The period
+carries a unit — `0.1hz` (absolute), `4beats` or `1bar` (locked to the grid);
+fractions like `1/2beat` are allowed. Shapes: `sine`, `triangle`, `square`,
+`saw`, `random`, `sample_hold`. A fast LFO on a slow stream aliases — one cycle
+per eight frames only ever samples eight phases.
 
 **Scales**, two notations, one internal format:
 
@@ -194,7 +238,8 @@ No framework, no bundler. ES modules straight from `web/js/`.
 
 | module | job |
 |---|---|
-| `reader.js` | frame lookup, loop policies, per-pass variation |
+| `tempo.js` | the grid: BPM, subdivision, swing, note values |
+| `reader.js` | frame lookup, loop policies, per-pass variation, onsets |
 | `transport.js` | the single clock; lookahead scheduler + rAF |
 | `audio.js` | oscillators, filter, delay, bitcrush |
 | `visual.js` | banding, ASCII waterfall, bars, block displacement, scan |
@@ -212,9 +257,9 @@ onsets arrive. A janky animation frame therefore costs a picture, never a beat.
 
 Two questions the design doc left open, answered here:
 
-- **Tick resolution:** data-driven. One row (or aggregated window) is one frame;
-  `rate` sets frames per second. A musical grid would impose a metre the data
-  does not have.
+- **Tick resolution:** data-driven. One row (or aggregated window) is one frame.
+  The *spacing* of those frames is a tempo (see above) — naming the grid does
+  not sequence anything, and the data still decides what happens on each step.
 - **When the stream runs out:** author's choice — `vary` (default), `loop`,
   `pingpong`, `once`. `vary` shifts the read phase and transposes slightly on
   each pass, both derived from the seed, so it repeats without repeating
@@ -263,26 +308,28 @@ invert · <kbd>f</kbd> fullscreen · <kbd>1</kbd>–<kbd>8</kbd> mute a voice.
 python tests/run_all.py          # both suites, and they cross-check each other
 ```
 
-71 Python tests, 17 Node tests. Weighted toward the two properties the aesthetic
+107 Python tests, 30 Node tests. Weighted toward the two properties the aesthetic
 depends on: **determinism** (a promise that is not tested is a wish) and
 **invariants** (a pedal that breaks one fails hundreds of frames later, in the
 browser, which is a miserable way to find out).
 
-The runner hands Python's voice-activation numbers to the Node suite to assert
-against, because both sides implement that curve independently and a drift
-between them would not fail anywhere — the piece would just be subtly different
-in the preview and in the browser.
+The runner hands Python's numbers to the Node suite to assert against — the
+voice-activation curve and the whole tempo grid, swung onsets included. Both
+sides implement those independently, and a drift between them would not fail
+anywhere: the browser would just play a slightly different piece from the one
+the pipeline rendered.
 
 ---
 
 ## Layout
 
 ```
-serrin/           the pipeline: rng, scales, ingest, pedals, chain, envelope, export, cli
+serrin/           the pipeline: rng, scales, tempo, ingest, pedals, chain,
+                  envelope, export, cli
 presets/          chain definitions
 scripts/          sample data generator, dev server
 web/              the runtime (index.html, style.css, js/)
-tests/            run_all.py, test_pipeline.py, test_runtime.mjs
+tests/            run_all.py, test_pipeline.py, test_tempo_lfsr.py, test_runtime.mjs
 data/  out/       inputs and renders (out/ is gitignored)
 ```
 

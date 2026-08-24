@@ -31,7 +31,7 @@
       "pedal": "caesar",
       "params": {
         "shift": 5,
-        "shift_lfo": "sine:0.1hz"
+        "shift_lfo": "sine:8beats"
       },
       "at_intensity": 0.55
     }
@@ -49,6 +49,15 @@
   "piece": {
     "mode": "closed",
     "loop": "vary",
-    "voice_entry": "variance"
+    "voice_entry": "variance",
+    "delay_note": "1/8."
+  },
+  "ingest": {
+    "tempo": {
+      "bpm": 120,
+      "subdivision": 16,
+      "swing": 0.0,
+      "beats_per_bar": 4
+    }
   }
 }

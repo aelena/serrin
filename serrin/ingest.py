@@ -20,6 +20,7 @@ from pathlib import Path
 
 from .rng import seed_from_bytes
 from .stream import MAX_VOICES, Stream
+from .tempo import Tempo
 
 #: Rows hashed to derive the automatic seed (section 3.4).
 SEED_ROWS = 64
@@ -232,11 +233,18 @@ def ingest_csv(
     bit_depth: int = 8,
     granularity: int = 1,
     aggregation: str = "mean",
-    rate: float = 8.0,
+    rate: float | None = None,
+    tempo: Tempo | str | dict | None = None,
     log_scale: bool = False,
     limit: int | None = None,
     delimiter: str | None = None,
 ) -> Stream:
+    """Read a CSV into a Stream.
+
+    ``tempo`` and ``rate`` are two ways of saying the same thing; an explicit
+    tempo wins, since it carries swing and metre that a bare rate cannot.
+    """
+    grid = Tempo.parse(tempo) if tempo is not None else Tempo.from_rate(rate or 8.0)
     header, rows = read_rows(path, delimiter)
     if limit:
         rows = rows[:limit]
@@ -264,13 +272,14 @@ def ingest_csv(
         names=names,
         data=channels,
         bit_depth=bit_depth,
-        rate=rate,
+        tempo=grid,
         meta={
             "source": str(path),
             "source_rows": len(rows),
             "columns": [header[i] for i in indices],
             "column_indices": indices,
             "granularity": granularity,
+            "tempo": grid.to_json(),
             "aggregation": aggregation if granularity > 1 else None,
             "log_scale": log_scale,
         },
