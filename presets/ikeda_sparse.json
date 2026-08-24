@@ -1,0 +1,53 @@
+{
+  "name": "ikeda_sparse",
+  "seed_mode": "auto",
+  "notes": "Restrained end of the range. delta of delta means only acceleration speaks, so most frames are near-silent; mod_reduce onto a pentatonic keeps the few events that do fire consonant. No bitcrush, no LFSR. Closest to the Raster-Noton reference before the dirt goes on.",
+  "chain": [
+    {
+      "pedal": "delta",
+      "params": {
+        "order": 2,
+        "signed": true
+      }
+    },
+    {
+      "pedal": "mod_reduce",
+      "params": {
+        "scale": "pentatonic_minor",
+        "octaves": 3
+      }
+    },
+    {
+      "pedal": "stutter_repeat",
+      "params": {
+        "threshold": 2,
+        "repeats": 4,
+        "block": 12,
+        "detect_channel": 0
+      }
+    }
+  ],
+  "ingest": {
+    "granularity": 4,
+    "aggregation": "mean",
+    "rate": 6.0
+  },
+  "envelope": {
+    "kind": "equation",
+    "equation": "plateau",
+    "params": {
+      "rise": 0.3,
+      "fall": 0.75
+    }
+  },
+  "mapping": {
+    "gate_threshold": 6,
+    "amp_floor": 0.05,
+    "density_from_delta": 0.9
+  },
+  "piece": {
+    "mode": "closed",
+    "loop": "vary",
+    "voice_entry": "sparse"
+  }
+}

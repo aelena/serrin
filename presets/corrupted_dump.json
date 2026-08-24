@@ -1,0 +1,76 @@
+{
+  "name": "corrupted_dump",
+  "seed_mode": "fixed",
+  "seed_override": 20260824,
+  "notes": "The aggressive end: everything on, no restraint. bit_reverse turns small changes into full-scale jumps, cross_mix lets queue_depth drive every other voice, and bitcrush drops to 2 bits at the climax. Fixed seed because this one is worth reproducing exactly.",
+  "chain": [
+    {
+      "pedal": "xor_mask",
+      "params": {
+        "mask_source": "column",
+        "column": 0
+      }
+    },
+    {
+      "pedal": "bit_reverse",
+      "params": {}
+    },
+    {
+      "pedal": "cross_mix",
+      "params": {
+        "driver_column": 7,
+        "op": "xor",
+        "depth": 0.8
+      },
+      "at_intensity": 0.3
+    },
+    {
+      "pedal": "interleave",
+      "params": {
+        "a": 2,
+        "b": 5,
+        "stride": 3
+      },
+      "at_intensity": 0.45
+    },
+    {
+      "pedal": "bitcrush",
+      "params": {
+        "target_bits": 2,
+        "bits_lfo": "sample_hold:0.5hz"
+      },
+      "at_intensity": 0.6
+    },
+    {
+      "pedal": "caesar",
+      "params": {
+        "shift": 17,
+        "shift_lfo": "square:0.05hz:0.4"
+      },
+      "at_intensity": 0.7
+    }
+  ],
+  "ingest": {
+    "rate": 12.0
+  },
+  "envelope": {
+    "kind": "equation",
+    "equation": "arc",
+    "params": {
+      "peak": 0.7,
+      "steepness": 11.0,
+      "decay": 4.0
+    }
+  },
+  "mapping": {
+    "note_low": 24,
+    "note_high": 84,
+    "freq_curve": "direct",
+    "glitch_threshold": 0.7
+  },
+  "piece": {
+    "mode": "closed",
+    "loop": "pingpong",
+    "voice_entry": "variance"
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "name": "endless_drift",
+  "seed_mode": "auto",
+  "notes": "Mode B (section 5.1-B): installation loop, no arc. Coarse granularity so it drifts slowly, one gentle pedal chain, flat envelope. Intensity comes only from what the data itself does.",
+  "chain": [
+    {
+      "pedal": "delta",
+      "params": {
+        "order": 1,
+        "signed": true
+      }
+    },
+    {
+      "pedal": "mod_reduce",
+      "params": {
+        "scale": "dorian",
+        "octaves": 2
+      }
+    },
+    {
+      "pedal": "cross_mix",
+      "params": {
+        "driver_column": 0,
+        "op": "add",
+        "depth": 0.35
+      }
+    }
+  ],
+  "ingest": {
+    "granularity": 8,
+    "aggregation": "mean",
+    "rate": 4.0
+  },
+  "envelope": {
+    "kind": "constant",
+    "level": 0.75
+  },
+  "mapping": {
+    "note_low": 36,
+    "note_high": 64,
+    "dur_base": 1.6,
+    "amp_floor": 0.2,
+    "hue_spread": 0.03
+  },
+  "piece": {
+    "mode": "endless",
+    "loop": "loop",
+    "voice_entry": "columns"
+  }
+}

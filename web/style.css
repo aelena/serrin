@@ -1,0 +1,328 @@
+/*
+ * Two visual registers on purpose.
+ *
+ * The stage is the piece: black, no chrome, nothing to look at but the data.
+ * The panel is a tool: dense, monospaced, legible under a stylus at arm's
+ * length on a tablet. Section 4.5 keeps them separate, so they do not share a
+ * design language beyond the typeface.
+ */
+
+:root {
+  --ink: #e9e9e6;
+  --ink-dim: #8b8b86;
+  --ink-faint: #4a4a48;
+  --panel-bg: rgba(9, 9, 12, 0.94);
+  --panel-line: #23232a;
+  --accent: #d8ff3a; /* one accent, used sparingly -- duotone discipline */
+  --mono: "Cascadia Mono", "DejaVu Sans Mono", Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: #07070a;
+  color: var(--ink);
+  font-family: var(--mono);
+  overflow: hidden;
+}
+
+#stage {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  cursor: none; /* the piece has no pointer */
+}
+
+/* ---------------------------------------------------------------- gate --- */
+.gate {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(circle at 50% 45%, #101015 0%, #07070a 70%);
+  z-index: 20;
+  cursor: default;
+}
+
+.gate[hidden] { display: none; }
+
+.gate-inner { text-align: center; max-width: 34rem; padding: 2rem; }
+
+.gate h1 {
+  margin: 0;
+  font-size: clamp(2.6rem, 9vw, 5rem);
+  letter-spacing: 0.42em;
+  font-weight: 400;
+  text-transform: lowercase;
+}
+
+.gate .sub {
+  margin: 0.2rem 0 2.4rem;
+  color: var(--ink-dim);
+  letter-spacing: 0.28em;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.gate .label {
+  color: var(--ink-faint);
+  font-size: 0.72rem;
+  margin-bottom: 1.6rem;
+  word-break: break-all;
+}
+
+.gate button {
+  background: none;
+  border: 1px solid var(--ink-dim);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 0.86rem;
+  letter-spacing: 0.3em;
+  padding: 0.85rem 2.6rem;
+  cursor: pointer;
+  text-transform: lowercase;
+  transition: border-color 120ms, color 120ms, background 120ms;
+}
+
+.gate button:hover:not(:disabled),
+.gate button:focus-visible:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+  outline: none;
+}
+
+.gate button:disabled { opacity: 0.3; cursor: wait; }
+
+.gate .hint {
+  margin-top: 2.6rem;
+  color: var(--ink-faint);
+  font-size: 0.66rem;
+  line-height: 1.9;
+}
+
+.gate .error {
+  margin-top: 1.6rem;
+  color: #ff6b6b;
+  font-size: 0.7rem;
+  text-align: left;
+  white-space: pre-wrap;
+  border-left: 2px solid #ff6b6b;
+  padding-left: 0.8rem;
+}
+
+kbd {
+  border: 1px solid var(--ink-faint);
+  padding: 0.05rem 0.3rem;
+  border-radius: 2px;
+  font-size: 0.62rem;
+}
+
+/* --------------------------------------------------------------- panel --- */
+.panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: min(30rem, 100vw);
+  height: 100vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--panel-bg);
+  backdrop-filter: blur(6px);
+  border-left: 1px solid var(--panel-line);
+  padding: 0 1.1rem 4rem;
+  font-size: 0.72rem;
+  z-index: 30;
+  cursor: default;
+}
+
+.panel[hidden] { display: none; }
+
+.panel-head {
+  position: sticky;
+  top: 0;
+  background: var(--panel-bg);
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.9rem 0 0.7rem;
+  border-bottom: 1px solid var(--panel-line);
+  margin-bottom: 0.4rem;
+  z-index: 2;
+}
+
+.panel-head strong { letter-spacing: 0.2em; text-transform: uppercase; font-weight: 400; }
+.panel-note { color: var(--ink-faint); font-size: 0.6rem; flex: 1; }
+
+.panel-head button {
+  background: none;
+  border: none;
+  color: var(--ink-dim);
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.2rem;
+}
+
+.panel-head button:hover { color: var(--accent); }
+
+.panel section {
+  padding: 0.9rem 0;
+  border-bottom: 1px solid var(--panel-line);
+}
+
+.panel h2 {
+  margin: 0 0 0.7rem;
+  font-size: 0.62rem;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  font-weight: 400;
+}
+
+.panel label {
+  display: block;
+  margin-bottom: 0.75rem;
+  color: var(--ink-dim);
+  font-size: 0.66rem;
+}
+
+.panel label.inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin: 0 0.9rem 0.4rem 0;
+}
+
+.panel output {
+  color: var(--ink);
+  float: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.panel input[type="range"] {
+  width: 100%;
+  margin-top: 0.35rem;
+  accent-color: var(--accent);
+  /* Comfortable under a stylus, which is the intended input for this panel. */
+  height: 1.4rem;
+}
+
+.panel select,
+.panel input[type="number"] {
+  width: 100%;
+  margin-top: 0.3rem;
+  background: #101014;
+  color: var(--ink);
+  border: 1px solid var(--panel-line);
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  padding: 0.4rem;
+}
+
+.panel .row {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.7rem;
+  align-items: center;
+}
+
+.panel .row button,
+.panel .voices button {
+  background: #101014;
+  border: 1px solid var(--panel-line);
+  color: var(--ink-dim);
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  padding: 0.4rem 0.7rem;
+  cursor: pointer;
+}
+
+.panel .row button:hover,
+.panel .voices button:hover { border-color: var(--ink-dim); color: var(--ink); }
+
+.panel .row button.on,
+.panel .voices button.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.micro { color: var(--ink-faint); font-size: 0.6rem; line-height: 1.6; margin: 0 0 0.6rem; }
+
+.facts {
+  display: grid;
+  grid-template-columns: 5.6rem 1fr;
+  gap: 0.15rem 0.6rem;
+  margin: 0 0 0.9rem;
+}
+
+.facts dt { color: var(--ink-faint); font-size: 0.6rem; }
+.facts dd { margin: 0; word-break: break-all; font-size: 0.64rem; }
+
+/* envelope drawing surface */
+.envelope {
+  width: 100%;
+  height: 9rem;
+  display: block;
+  background: #0c0c10;
+  border: 1px solid var(--panel-line);
+  margin-bottom: 0.5rem;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+/* voices */
+.voices { display: grid; gap: 0.3rem; margin-bottom: 0.8rem; }
+
+.voice-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  gap: 0.3rem;
+  align-items: center;
+}
+
+.voice-row .name {
+  font-size: 0.64rem;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-row .meter {
+  grid-column: 1 / -1;
+  height: 2px;
+  background: var(--panel-line);
+}
+
+.voice-row .meter i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  width: 0;
+}
+
+.voice-row.gated .name { color: var(--ink-faint); }
+
+/* pedals */
+.pedals { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.25rem; }
+
+.pedal-row {
+  display: grid;
+  grid-template-columns: 1rem 1fr auto;
+  gap: 0.4rem;
+  align-items: baseline;
+  font-size: 0.64rem;
+  color: var(--ink-dim);
+}
+
+.pedal-row .dot { color: var(--ink-faint); }
+.pedal-row.on { color: var(--ink); }
+.pedal-row.on .dot { color: var(--accent); }
+.pedal-row .params { color: var(--ink-faint); font-size: 0.58rem; }
+
+@media (max-width: 40rem) {
+  .panel { width: 100vw; border-left: none; }
+}

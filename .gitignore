@@ -1,0 +1,31 @@
+# --- design document (kept out of the repo on purpose) ---
+SPECS.en.md
+SPECS*.md
+
+# --- generated streams / renders ---
+out/
+*.stream.json
+*.bin
+
+# --- python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- node (only if a toolchain ever gets added) ---
+node_modules/
+package-lock.json
+
+# --- editors / os ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini

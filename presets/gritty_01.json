@@ -1,0 +1,54 @@
+{
+  "name": "gritty_01",
+  "seed_mode": "auto",
+  "seed_override": null,
+  "notes": "The design document's own example chain (section 3.4). Baseline reference: delta strips absolute level, the LFSR mask shreds what's left, bitcrush steps it, and the moving Caesar keeps it from settling.",
+  "chain": [
+    {
+      "pedal": "delta",
+      "params": {
+        "order": 1
+      }
+    },
+    {
+      "pedal": "xor_mask",
+      "params": {
+        "mask_source": "lfsr",
+        "taps": [
+          3,
+          1
+        ]
+      }
+    },
+    {
+      "pedal": "bitcrush",
+      "params": {
+        "target_bits": 4
+      },
+      "at_intensity": 0.35
+    },
+    {
+      "pedal": "caesar",
+      "params": {
+        "shift": 5,
+        "shift_lfo": "sine:0.1hz"
+      },
+      "at_intensity": 0.55
+    }
+  ],
+  "envelope": {
+    "kind": "archetype",
+    "archetype": "full_arc",
+    "curvature": 1.2
+  },
+  "mapping": {
+    "quantize_to": "pentatonic_minor",
+    "note_low": 33,
+    "note_high": 69
+  },
+  "piece": {
+    "mode": "closed",
+    "loop": "vary",
+    "voice_entry": "variance"
+  }
+}

@@ -1,0 +1,5 @@
+# Normalize line endings so the repo is not a diff of invisible characters.
+* text=auto eol=lf
+
+# Rendered streams are generated; never diff them.
+out/** -diff

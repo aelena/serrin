@@ -1,0 +1,430 @@
+/**
+ * The author panel (section 4.5).
+ *
+ * Explicitly *not* part of the piece: it starts hidden, it is reached with `p`
+ * or `?panel=1`, and hiding it changes nothing about what is playing. It lives
+ * in the same document as the stage rather than in a second window, because
+ * live envelope drawing needs to be on the engine's clock -- section 5.1 calls
+ * that out as an architectural consequence, and a second process would have to
+ * fake it.
+ *
+ * One control from 4.5 is honestly incomplete: reordering and toggling
+ * individual pedals *on the fly*. The chain is rendered offline by the Python
+ * pipeline in phase 1, so the pedal list here is read-only and shows which
+ * pedals the current intensity has notionally switched on. Live pedal
+ * manipulation needs the chain ported to JS (roadmap step 5).
+ */
+
+import {
+  Envelope,
+  StrokeRecorder,
+  envelopeFromArchetype,
+  envelopeFromEquation,
+} from './envelope.js';
+
+const $ = (id) => document.getElementById(id);
+
+export class Panel {
+  constructor(app) {
+    this.app = app; // the live engine handle from main.js
+    this.root = $('panel');
+    this.visible = false;
+    // Re-appliers for every slider and checkbox, so a preset switch can push the
+    // author's current settings into the freshly built engines.
+    this._appliers = [];
+    this._wire();
+    this.refresh();
+  }
+
+  /**
+   * Point the panel at a newly loaded piece.
+   *
+   * Constructed once and refreshed, never rebuilt: the controls live in the
+   * document, so a second Panel would bind a second listener to every one of
+   * them and a second StrokeRecorder to the envelope canvas. Handlers reach the
+   * engines through `this.app`, whose properties main.js replaces on load, so
+   * the existing wiring keeps working against the new objects.
+   */
+  refresh() {
+    const app = this.app;
+    $('ctl-mode').value = app.reader.mode;
+    $('ctl-loop').value = app.reader.loopPolicy;
+    $('ctl-entry').value = app.entryStrategy;
+    // Speed goes the other way: the reader may already carry a ?speed= from the
+    // URL, and re-applying a stale slider position would silently discard it.
+    $('ctl-speed').value = String(app.reader.speed);
+    // Everything else re-applies the slider positions the author is looking at;
+    // a new AudioEngine starts on its own defaults and would otherwise ignore
+    // them.
+    for (const apply of this._appliers) apply();
+    this._paintFacts();
+    this._paintVoices();
+    this._paintPedals();
+    this._paintEnvelope();
+  }
+
+  toggle(force) {
+    this.visible = force ?? !this.visible;
+    this.root.hidden = !this.visible;
+    document.getElementById('stage').style.cursor = this.visible ? 'default' : 'none';
+    if (this.visible) this._paintEnvelope();
+  }
+
+  // -- wiring --------------------------------------------------------------
+  _wire() {
+    const app = this.app;
+
+    $('panel-close').addEventListener('click', () => this.toggle(false));
+
+    $('ctl-play').addEventListener('click', async () => {
+      const playing = await app.transport.toggle();
+      $('ctl-play').textContent = playing ? 'pause' : 'play';
+    });
+    $('ctl-stop').addEventListener('click', () => {
+      app.transport.stop();
+      $('ctl-play').textContent = 'play';
+    });
+
+    // -- presets: re-fetch a different render. Switching preset in phase 1 means
+    // loading a different pair of exported streams, not re-running the chain.
+    const presetSelect = $('ctl-preset');
+    presetSelect.replaceChildren();
+    for (const preset of app.presets) {
+      const option = document.createElement('option');
+      option.value = preset.id;
+      option.textContent = preset.id;
+      presetSelect.append(option);
+    }
+    presetSelect.value = app.presetId ?? app.presets[0]?.id ?? '';
+    presetSelect.addEventListener('change', () => app.loadPreset(presetSelect.value));
+
+    // -- clock
+    this._range('ctl-speed', 'out-speed', (v) => {
+      app.reader.speed = v;
+      return `${v.toFixed(2)}×`;
+    });
+
+    const position = $('ctl-position');
+    position.addEventListener('input', () => {
+      app.transport.seekNormalized(Number(position.value));
+    });
+
+    $('ctl-mode').addEventListener('change', (e) => {
+      app.reader.mode = e.target.value;
+      this._paintEnvelope();
+    });
+
+    $('ctl-loop').addEventListener('change', (e) => {
+      app.reader.loopPolicy = e.target.value;
+    });
+
+    $('ctl-duration').addEventListener('change', (e) => {
+      app.transport.setDurationSeconds(Number(e.target.value));
+      this._paintFacts();
+    });
+
+    // -- envelope
+    this.strokeRecorder = new StrokeRecorder($('envelope-canvas'), (envelope) => {
+      app.setEnvelope(envelope);
+      this._paintEnvelope();
+    });
+    $('envelope-canvas').addEventListener('stroke:move', () => this._paintEnvelope());
+    $('ctl-pressure').addEventListener('change', (e) => {
+      this.strokeRecorder.usePressure = e.target.checked;
+    });
+    $('ctl-curve-apply').addEventListener('click', () => {
+      const [kind, name] = $('ctl-curve').value.split(':');
+      app.setEnvelope(
+        kind === 'ar' ? envelopeFromArchetype(name) : envelopeFromEquation(name),
+      );
+      this.strokeRecorder.clear();
+      this._paintEnvelope();
+    });
+    $('ctl-curve-baked').addEventListener('click', () => {
+      app.setEnvelope(Envelope.fromExport(app.reader.audio.envelope));
+      this.strokeRecorder.clear();
+      this._paintEnvelope();
+    });
+    $('ctl-curve-export').addEventListener('click', () => this._exportEnvelope());
+
+    // -- voices
+    $('ctl-entry').addEventListener('change', (e) => {
+      app.setEntryStrategy(e.target.value);
+      this._paintVoices();
+    });
+
+    // -- balance and grit
+    this._range('ctl-balance', 'out-balance', (v) => {
+      app.audio.balance = v;
+      app.visual.balance = v;
+      return v.toFixed(2);
+    });
+    this._range('ctl-master', 'out-master', (v) => {
+      app.audio.setMaster(v);
+      return v.toFixed(2);
+    });
+    this._range('ctl-crush', 'out-crush', (v) => {
+      // 8 hands control back to the intensity envelope; anything else pins it.
+      app.audio.setCrush(v);
+      return v >= 8 ? 'auto' : `${v} bit`;
+    });
+    this._range('ctl-cutoff', 'out-cutoff', (v) => {
+      app.audio.setCutoff(v);
+      return `${v.toFixed(0)} Hz`;
+    });
+    this._range('ctl-delay', 'out-delay', (v) => {
+      app.audio.setDelayMix(v);
+      return v.toFixed(2);
+    });
+    this._range('ctl-corruption', 'out-corruption', (v) => {
+      app.visual.corruption = v;
+      return v.toFixed(2);
+    });
+
+    this._check('ctl-glyphs', (on) => { app.visual.showGlyphs = on; });
+    this._check('ctl-bars', (on) => { app.visual.showBars = on; });
+    this._check('ctl-banding', (on) => { app.visual.showBanding = on; });
+    this._check('ctl-invert', (on) => { app.visual.invert = on; });
+  }
+
+  _range(inputId, outputId, apply) {
+    const input = $(inputId);
+    const output = $(outputId);
+    const handler = () => {
+      output.textContent = apply(Number(input.value));
+    };
+    input.addEventListener('input', handler);
+    this._appliers.push(handler);
+  }
+
+  _check(id, apply) {
+    const input = $(id);
+    const handler = () => apply(input.checked);
+    input.addEventListener('change', handler);
+    this._appliers.push(handler);
+  }
+
+  // -- painting ------------------------------------------------------------
+  _paintFacts() {
+    const meta = this.app.reader.meta;
+    $('fact-label').textContent = meta.label ?? '—';
+    $('fact-seed').textContent = String(meta.seed ?? '—');
+    $('fact-voices').textContent = `${this.app.reader.voiceCount} / 8`;
+    $('fact-frames').textContent =
+      `${this.app.reader.length} @ ${this.app.reader.rate}Hz ` +
+      `(${this.app.reader.duration.toFixed(1)}s)`;
+    $('fact-fingerprint').textContent = meta.fingerprint ?? '—';
+    $('preset-note').textContent =
+      this.app.presets.find((p) => p.id === this.app.presetId)?.note ?? '';
+  }
+
+  _paintVoices() {
+    const list = $('voice-list');
+    list.replaceChildren();
+    this.voiceRows = [];
+
+    this.app.reader.names.forEach((name, index) => {
+      const row = document.createElement('div');
+      row.className = 'voice-row';
+
+      const label = document.createElement('span');
+      label.className = 'name';
+      const entryPosition = this.app.entryOrder.indexOf(index);
+      label.textContent = `${index + 1}. ${name}`;
+      label.title = `enters at position ${entryPosition + 1} of ${this.app.entryOrder.length}`;
+
+      const mute = document.createElement('button');
+      mute.textContent = 'm';
+      mute.title = 'mute audio';
+      mute.addEventListener('click', () => {
+        mute.classList.toggle('on', this.app.audio.toggleMute(index));
+      });
+
+      const solo = document.createElement('button');
+      solo.textContent = 's';
+      solo.title = 'solo audio';
+      solo.addEventListener('click', () => {
+        const soloed = this.app.audio.setSolo(index);
+        for (const other of this.voiceRows) other.solo.classList.remove('on');
+        if (soloed === index) solo.classList.add('on');
+      });
+
+      const hide = document.createElement('button');
+      hide.textContent = 'v';
+      hide.title = 'hide from the visuals';
+      hide.addEventListener('click', () => {
+        hide.classList.toggle('on', !this.app.visual.toggleVoice(index));
+      });
+
+      const meter = document.createElement('span');
+      meter.className = 'meter';
+      const fill = document.createElement('i');
+      meter.append(fill);
+
+      row.append(label, mute, solo, hide, meter);
+      list.append(row);
+      this.voiceRows.push({ row, fill, solo, index });
+    });
+  }
+
+  _paintPedals() {
+    const list = $('pedal-list');
+    list.replaceChildren();
+    const slots = this.app.reader.meta.chain?.chain ?? [];
+    this.pedalRows = [];
+
+    if (!slots.length) {
+      const empty = document.createElement('li');
+      empty.className = 'micro';
+      empty.textContent = 'no chain metadata in this render';
+      list.append(empty);
+      return;
+    }
+
+    slots.forEach((slot, index) => {
+      const row = document.createElement('li');
+      row.className = 'pedal-row';
+
+      const dot = document.createElement('span');
+      dot.className = 'dot';
+      dot.textContent = '●';
+
+      const name = document.createElement('span');
+      name.textContent = `${index}. ${slot.pedal}`;
+
+      const params = document.createElement('span');
+      params.className = 'params';
+      const at = slot.at_intensity ? `@${slot.at_intensity}` : '';
+      params.textContent = `${Object.entries(slot.params ?? {})
+        .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+        .join(' ')} ${at}`.trim();
+
+      row.append(dot, name, params);
+      list.append(row);
+      this.pedalRows.push({ row, threshold: slot.at_intensity ?? 0 });
+    });
+  }
+
+  /** Draw the envelope, the live stroke, and the playhead. */
+  _paintEnvelope() {
+    const canvas = $('envelope-canvas');
+    const ctx = canvas.getContext('2d');
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const w = canvas.clientWidth || 600;
+    const h = canvas.clientHeight || 150;
+    if (canvas.width !== Math.floor(w * dpr)) {
+      canvas.width = Math.floor(w * dpr);
+      canvas.height = Math.floor(h * dpr);
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    ctx.fillStyle = '#0c0c10';
+    ctx.fillRect(0, 0, w, h);
+
+    // Grid at the quartiles: an intensity curve is read by proportion.
+    ctx.strokeStyle = '#1c1c22';
+    ctx.lineWidth = 1;
+    for (let i = 1; i < 4; i += 1) {
+      ctx.beginPath();
+      ctx.moveTo(0, (h * i) / 4);
+      ctx.lineTo(w, (h * i) / 4);
+      ctx.moveTo((w * i) / 4, 0);
+      ctx.lineTo((w * i) / 4, h);
+      ctx.stroke();
+    }
+
+    const envelope = this.app.envelope;
+    if (this.app.reader.mode === 'endless') {
+      ctx.fillStyle = '#4a4a48';
+      ctx.font = '11px "Cascadia Mono", monospace';
+      ctx.fillText('endless mode — intensity reacts to the data, no arc', 10, 20);
+    }
+
+    // The curve.
+    ctx.strokeStyle = '#d8ff3a';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    const steps = Math.max(64, Math.floor(w));
+    for (let i = 0; i <= steps; i += 1) {
+      const t = i / steps;
+      const x = t * w;
+      const y = h - envelope.at(t) * h;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    // Pedal activation thresholds, so the author can see where each one arrives.
+    const slots = this.app.reader.meta.chain?.chain ?? [];
+    ctx.font = '9px "Cascadia Mono", monospace';
+    for (const slot of slots) {
+      const threshold = slot.at_intensity ?? 0;
+      if (!threshold) continue;
+      const y = h - threshold * h;
+      ctx.strokeStyle = 'rgba(216,255,58,0.22)';
+      ctx.setLineDash([2, 3]);
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(216,255,58,0.5)';
+      ctx.fillText(slot.pedal, 4, y - 3);
+    }
+
+    // Playhead and current intensity.
+    const progress = this.app.transport.progress();
+    if (progress !== null) {
+      const x = progress * w;
+      ctx.strokeStyle = 'rgba(233,233,230,0.6)';
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, h);
+      ctx.stroke();
+      ctx.fillStyle = '#e9e9e6';
+      ctx.beginPath();
+      ctx.arc(x, h - this.app.intensity * h, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    $('envelope-origin').textContent = `origin: ${JSON.stringify(envelope.origin)}`;
+  }
+
+  /** Dump the current curve so a live stroke can be replayed later, or baked. */
+  _exportEnvelope() {
+    const payload = JSON.stringify(this.app.envelope.toJSON(), null, 2);
+    const blob = new Blob([payload], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${this.app.reader.meta.label ?? 'serrin'}.envelope.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  /** Cheap per-frame refresh of the things that move. Called from the rAF loop. */
+  tick() {
+    if (!this.visible) return;
+
+    const levels = this.app.audio.voiceLevels();
+    const gates = this.app.gates;
+    for (const entry of this.voiceRows ?? []) {
+      const level = levels[entry.index] ?? 0;
+      entry.fill.style.width = `${Math.min(100, level * 140).toFixed(1)}%`;
+      entry.row.classList.toggle('gated', gates ? gates[entry.index] === false : false);
+    }
+
+    for (const entry of this.pedalRows ?? []) {
+      entry.row.classList.toggle('on', this.app.intensity >= entry.threshold);
+    }
+
+    const progress = this.app.transport.progress();
+    if (progress !== null && document.activeElement !== $('ctl-position')) {
+      $('ctl-position').value = String(progress);
+      $('out-position').textContent = `${(progress * 100).toFixed(0)}%`;
+    }
+
+    this._paintEnvelope();
+  }
+}

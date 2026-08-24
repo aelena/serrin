@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>serrin</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <!--
+      The piece is the canvas and nothing else. Section 4.5 is explicit that the
+      control panel "is an author's tool, not part of the piece" and "is not shown
+      in the final experience", so it lives in an overlay that starts hidden and
+      is reached with `p` or `?panel=1`. Same document, therefore the same clock
+      and the same engine state -- which is what live envelope drawing needs.
+    -->
+    <canvas id="stage"></canvas>
+
+    <div id="gate" class="gate">
+      <div class="gate-inner">
+        <h1>serrin</h1>
+        <p class="sub">opaque noise translator</p>
+        <p class="label" id="gate-label">loading…</p>
+        <button id="gate-start" disabled>begin</button>
+        <p class="hint">
+          browsers will not make sound until you ask them to ·
+          <kbd>space</kbd> play/pause · <kbd>p</kbd> panel · <kbd>1</kbd>–<kbd>8</kbd> mute voice
+        </p>
+        <p class="error" id="gate-error" hidden></p>
+      </div>
+    </div>
+
+    <aside id="panel" class="panel" hidden aria-label="author panel">
+      <header class="panel-head">
+        <strong>author panel</strong>
+        <span class="panel-note">rehearsal tool · not part of the piece</span>
+        <button id="panel-close" title="hide (p)">×</button>
+      </header>
+
+      <section>
+        <h2>piece</h2>
+        <dl class="facts">
+          <dt>label</dt><dd id="fact-label">—</dd>
+          <dt>seed</dt><dd id="fact-seed">—</dd>
+          <dt>voices</dt><dd id="fact-voices">—</dd>
+          <dt>frames</dt><dd id="fact-frames">—</dd>
+          <dt>fingerprint</dt><dd id="fact-fingerprint">—</dd>
+        </dl>
+        <div class="row">
+          <button id="ctl-play">play</button>
+          <button id="ctl-stop">stop</button>
+        </div>
+        <label>preset
+          <select id="ctl-preset"></select>
+        </label>
+        <p class="micro" id="preset-note"></p>
+      </section>
+
+      <section>
+        <h2>clock</h2>
+        <label>tick speed <output id="out-speed">1.00×</output>
+          <input id="ctl-speed" type="range" min="0.1" max="4" step="0.01" value="1" />
+        </label>
+        <label>position <output id="out-position">0%</output>
+          <input id="ctl-position" type="range" min="0" max="1" step="0.001" value="0" />
+        </label>
+        <label>piece mode
+          <select id="ctl-mode">
+            <option value="closed">closed (intensity envelope)</option>
+            <option value="endless">endless stream (reactive)</option>
+          </select>
+        </label>
+        <label>when the stream runs out
+          <select id="ctl-loop">
+            <option value="vary">iterate with variation</option>
+            <option value="loop">loop</option>
+            <option value="pingpong">ping-pong</option>
+            <option value="once">once, then silence</option>
+          </select>
+        </label>
+        <label>target duration (s, 0 = at the data's mercy)
+          <input id="ctl-duration" type="number" min="0" step="5" value="0" />
+        </label>
+      </section>
+
+      <section>
+        <h2>intensity envelope</h2>
+        <canvas id="envelope-canvas" class="envelope" width="600" height="150"></canvas>
+        <p class="micro">
+          draw with a stylus, pen or mouse — the stroke replaces the baked curve
+        </p>
+        <div class="row">
+          <select id="ctl-curve">
+            <optgroup label="equation">
+              <option value="eq:arc">arc</option>
+              <option value="eq:sigmoid">sigmoid</option>
+              <option value="eq:plateau">plateau</option>
+              <option value="eq:ramp">ramp</option>
+              <option value="eq:ramp_down">ramp down</option>
+              <option value="eq:pulse">pulse</option>
+              <option value="eq:flat">flat</option>
+            </optgroup>
+            <optgroup label="archetype">
+              <option value="ar:full_arc">full arc</option>
+              <option value="ar:build_up">build-up</option>
+              <option value="ar:crescendo">crescendo</option>
+              <option value="ar:climax">climax</option>
+              <option value="ar:fade_out">fade-out</option>
+              <option value="ar:dismantling">dismantling</option>
+            </optgroup>
+          </select>
+          <button id="ctl-curve-apply">apply</button>
+          <button id="ctl-curve-baked">revert to baked</button>
+        </div>
+        <div class="row">
+          <label class="inline"><input id="ctl-pressure" type="checkbox" /> use stylus pressure</label>
+          <button id="ctl-curve-export">export stroke</button>
+        </div>
+        <p class="micro" id="envelope-origin"></p>
+      </section>
+
+      <section>
+        <h2>voices</h2>
+        <p class="micro">mute · solo · hide. entry order comes from the envelope (5.1.1).</p>
+        <div id="voice-list" class="voices"></div>
+        <label>voice entry order
+          <select id="ctl-entry">
+            <option value="variance">by variance (busiest first)</option>
+            <option value="columns">author order</option>
+            <option value="sparse">sparsest first</option>
+          </select>
+        </label>
+      </section>
+
+      <section>
+        <h2>balance &amp; grit</h2>
+        <label>audio ↔ visual weight <output id="out-balance">0.50</output>
+          <input id="ctl-balance" type="range" min="0" max="1" step="0.01" value="0.5" />
+        </label>
+        <label>master <output id="out-master">0.55</output>
+          <input id="ctl-master" type="range" min="0" max="1" step="0.01" value="0.55" />
+        </label>
+        <label>bitcrush (bits) <output id="out-crush">auto</output>
+          <input id="ctl-crush" type="range" min="1" max="8" step="1" value="8" />
+        </label>
+        <label>filter cutoff <output id="out-cutoff">9000 Hz</output>
+          <input id="ctl-cutoff" type="range" min="200" max="14000" step="50" value="9000" />
+        </label>
+        <label>delay mix <output id="out-delay">0.22</output>
+          <input id="ctl-delay" type="range" min="0" max="0.8" step="0.01" value="0.22" />
+        </label>
+        <label>corruption <output id="out-corruption">1.00</output>
+          <input id="ctl-corruption" type="range" min="0" max="2" step="0.05" value="1" />
+        </label>
+        <div class="row">
+          <label class="inline"><input id="ctl-glyphs" type="checkbox" checked /> glyphs</label>
+          <label class="inline"><input id="ctl-bars" type="checkbox" checked /> bars</label>
+          <label class="inline"><input id="ctl-banding" type="checkbox" checked /> banding</label>
+          <label class="inline"><input id="ctl-invert" type="checkbox" /> invert</label>
+        </div>
+      </section>
+
+      <section>
+        <h2>pedal chain</h2>
+        <p class="micro">
+          rendered offline by the Python pipeline, so this is read-only in phase 1.
+          the ● column shows which pedals the current intensity has switched on.
+        </p>
+        <ol id="pedal-list" class="pedals"></ol>
+      </section>
+    </aside>
+
+    <script type="module" src="js/main.js"></script>
+  </body>
+</html>
