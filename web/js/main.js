@@ -20,6 +20,7 @@ import { Envelope, ReactiveIntensity, voiceGates } from './envelope.js';
 import { loadStreams } from './reader.js';
 import { Transport } from './transport.js';
 import { VisualEngine } from './visual.js';
+import { DebugConsole } from './console.js';
 import { Panel } from './panel.js';
 
 /**
@@ -78,6 +79,7 @@ const app = {
   entryOrder: [],
   keyboard: null,
   recorder: null,
+  console: null,
 
   /** Replace the intensity curve. Stroke, equation or archetype -- same call. */
   setEnvelope(envelope) {
@@ -109,6 +111,7 @@ const app = {
    * the preset dropdown like anything else.
    */
   async adoptRender(result) {
+    this.console?.setTrace(result.trace ?? null, result.label);
     const id = result.label || `render-${this.presets.length}`;
     const entry = {
       id,
@@ -201,6 +204,14 @@ function adopt(reader) {
   // engine rather than kept across a preset switch.
   app.recorder = new Recorder(app.audio, stage);
   app.recorder.onStateChange = () => app.panel?._paintRecord();
+  // Built once and re-pointed, like the panel: it owns the log, and a preset
+  // switch should not erase what happened before it.
+  if (!app.console) app.console = new DebugConsole(app);
+  app.console.log(
+    `loaded ${reader.meta.label ?? 'stream'} — ${reader.voiceCount} voices, ` +
+      `${reader.length} frames, ${reader.tempo.describe()}`,
+    'render',
+  );
   app.visual.showKeys = app.keyboard.showKeys;
   app.envelope = Envelope.fromExport(reader.audio.envelope);
   app.reactive = new ReactiveIntensity(reader.seed);
@@ -253,6 +264,7 @@ async function boot() {
   // Panel refresh runs on its own rAF so the engines' loop stays clean.
   const panelLoop = () => {
     app.panel?.tick();
+    app.console?.tick();
     requestAnimationFrame(panelLoop);
   };
   requestAnimationFrame(panelLoop);
@@ -291,6 +303,12 @@ window.addEventListener('keydown', async (event) => {
     case 'p':
     case 'P':
       app.panel?.toggle();
+      break;
+    case 'F2':
+      // A function key, so the keyboard never claims it -- claims() only takes
+      // single-character keys.
+      event.preventDefault();
+      app.console?.toggle();
       break;
     case 'i':
     case 'I':

@@ -115,6 +115,37 @@ class TestRenderUpload(unittest.TestCase):
         result = serve.render_upload({"csv": CSV, "name": "cols.csv", "columns": ["cpu", "mem"]})
         self.assertEqual(result["voices"], ["cpu", "mem"])
 
+    def test_tracing_is_opt_in(self):
+        # Off by default because it roughly doubles the work and the reply size,
+        # and most renders are not being debugged.
+        plain = serve.render_upload({"csv": CSV, "name": "plain.csv"})
+        self.assertIsNone(plain["trace"])
+
+    def test_a_traced_render_returns_the_stages(self):
+        result = serve.render_upload(
+            {"csv": CSV, "name": "traced.csv", "trace": True, "trace_window": 8}
+        )
+        trace = result["trace"]
+        self.assertEqual(trace["window"], 8)
+        kinds = [stage["kind"] for stage in trace["stages"]]
+        # The whole pipeline, in order: what came in, what each pedal did, and
+        # how the result was read twice.
+        self.assertEqual(kinds[0], "ingest")
+        self.assertEqual(kinds[-1], "mapping")
+        self.assertIn("pedal", kinds)
+        # And the conversion table the browser needs to show cell -> byte.
+        self.assertTrue(trace["stages"][0]["detail"]["conversions"])
+
+    def test_a_traced_repo_render_reports_branch_ownership(self):
+        # The graph adapter has no cell-to-byte table; ownership is the
+        # equivalent question, so the stage carries that instead.
+        if not shutil.which("git"):
+            self.skipTest("git is not on PATH")
+        result = serve.render_upload({"repo": str(ROOT), "trace": True, "trace_window": 4})
+        stage = result["trace"]["stages"][0]
+        self.assertEqual(stage["kind"], "ingest")
+        self.assertIn("owned", stage["detail"])
+
     # -- refusals ----------------------------------------------------------
     def test_an_empty_request_is_refused(self):
         with self.assertRaises(ValueError):

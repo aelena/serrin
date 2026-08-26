@@ -129,11 +129,20 @@ def render_upload(payload: dict) -> dict:
     # static server from working.
     from serrin.chain import Chain, default_chain
     from serrin.envelope import Envelope
-    from serrin.export import MappingConfig, build_piece, write_json
+    from serrin.export import MappingConfig, build_piece, trace_mapping, write_json
     from serrin.ingest import ingest_csv
     from serrin.ingest_git import ingest_repo
     from serrin.session import Session
     from serrin.tempo import Tempo
+    from serrin.trace import DEFAULT_WINDOW, Trace
+
+    # Tracing is opt-in per request: it roughly doubles the work and the reply
+    # size, and most renders are not being debugged.
+    recorder = (
+        Trace(window=int(payload.get("trace_window") or DEFAULT_WINDOW))
+        if payload.get("trace")
+        else None
+    )
 
     csv_text = payload.get("csv")
     repo_path = payload.get("repo")
@@ -173,6 +182,7 @@ def render_upload(payload: dict) -> dict:
             tempo=tempo,
             log_scale=bool(payload.get("log_scale", ingest_opts.get("log_scale", False))),
             limit=payload.get("limit"),
+            trace=recorder,
         )
     else:
         source = Path(str(repo_path)).expanduser()
@@ -189,11 +199,29 @@ def render_upload(payload: dict) -> dict:
             tempo=tempo,
             limit=payload.get("limit"),
         )
+        if recorder is not None:
+            recorder.add(
+                "ingest",
+                f"read {source.name} (git)",
+                stream,
+                params={
+                    "metric": stream.meta["git"]["metric"],
+                    "traversal": stream.meta["git"]["traversal"],
+                },
+                detail=dict(stream.meta["git"]),
+                note=(
+                    "each branch takes a value at its own commits and holds "
+                    "between them, so a quiet branch becomes a quiet voice"
+                ),
+            )
 
     # -- render ------------------------------------------------------------
     seed = payload.get("seed")
     transformed = chain.apply(
-        stream, seed=int(seed) if seed is not None else None, source=source
+        stream,
+        seed=int(seed) if seed is not None else None,
+        source=source,
+        recorder=recorder,
     )
     mapping = MappingConfig.from_json(chain.mapping)
     envelope = Envelope.from_spec(chain.envelope) if chain.envelope else Envelope.constant(1.0)
@@ -215,6 +243,9 @@ def render_upload(payload: dict) -> dict:
     # later inside relative_to() with a confusing message.
     if ROOT not in UPLOAD_DIR.resolve().parents and UPLOAD_DIR.resolve() != ROOT:
         raise ValueError(f"upload directory {UPLOAD_DIR} is outside the served root {ROOT}")
+
+    if recorder is not None:
+        trace_mapping(transformed, piece, recorder)
 
     target = UPLOAD_DIR / name
     audio_path = target.with_name(f"{name}_audio.json")
@@ -276,6 +307,7 @@ def render_upload(payload: dict) -> dict:
         "audio": "/" + str(audio_path.relative_to(ROOT)).replace("\\", "/"),
         "visual": "/" + str(visual_path.relative_to(ROOT)).replace("\\", "/"),
         "session": "/" + str(session_path.relative_to(ROOT)).replace("\\", "/"),
+        "trace": recorder.to_json() if recorder is not None else None,
     }
 
 

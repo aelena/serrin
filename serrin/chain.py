@@ -156,16 +156,26 @@ class Chain:
         source: str | Path | None = None,
         intensity: float = 1.0,
         trace: bool = False,
+        recorder=None,
     ) -> Stream:
         """Run the enabled pedals in order.
 
         ``intensity`` gates slots by their ``at_intensity`` threshold, which is
         how a single preset can render as "intro" or "climax" (section 5.1). The
         default of 1.0 means "everything the author enabled".
+
+        ``trace`` prints a line per stage; ``recorder`` is a ``Trace`` that keeps
+        the values. They are separate because the first is for watching a render
+        go by and the second is for reading it afterwards.
         """
         if seed is None:
             seed = self.resolve_seed(source)
         current = stream
+
+        if recorder is not None and not recorder.stages:
+            # A chain applied to a stream nobody traced still needs a baseline,
+            # or the first pedal has nothing to be a difference from.
+            recorder.add("ingest", "input stream", current)
         applied: list[dict] = []
 
         for index, slot in enumerate(self.slots):
@@ -183,6 +193,24 @@ class Chain:
                     f"({before.n_voices} -> {current.n_voices}); pedals must not"
                 )
             applied.append({"index": index, "pedal": slot.pedal, "params": slot.params})
+            if recorder is not None:
+                stage = recorder.add(
+                    "pedal",
+                    slot.pedal,
+                    current,
+                    params=dict(slot.params),
+                    detail={
+                        k: v
+                        for k, v in (("lfsr", current.meta.get("lfsr")),
+                                     ("quantized_scale", current.meta.get("quantized_scale")))
+                        if v
+                    },
+                    note=(
+                        "length changed: this is the one pedal that may stall the "
+                        "stream" if current.length != before.length else ""
+                    ),
+                )
+                recorder.diff_from_previous(stage)
             if trace:
                 print(f"  [{index}] {slot.pedal:<16} -> {current.describe().splitlines()[0]}")
 

@@ -19,7 +19,7 @@ from pathlib import Path
 from . import pedals
 from .chain import Chain, default_chain
 from .envelope import ARCHETYPES, EQUATIONS, Envelope, voice_order
-from .export import MappingConfig, build_piece, write_json
+from .export import MappingConfig, build_piece, trace_mapping, write_json
 from .ingest import IngestError, ingest_csv
 from .ingest_git import (
     METRICS,
@@ -32,6 +32,7 @@ from .ingest_git import (
 from .scales import SCALE_BANK, resolve
 from .session import Session, SessionError, promote_to_preset
 from .stream import MAX_VOICES
+from .trace import DEFAULT_WINDOW, Trace
 from .tempo import NOTE_FRACTIONS, SUBDIVISIONS, Tempo, TempoError
 
 
@@ -71,32 +72,56 @@ def _envelope_from_args(args, chain: Chain) -> Envelope:
     return Envelope.constant(1.0)
 
 
-def _read_source(args, ingest_opts: dict, source: str, kind: str):
+def _read_source(args, ingest_opts: dict, source: str, kind: str, recorder=None):
     """Ingest from wherever the source lives. Everything downstream is identical.
 
     This function is the entire cost of section 6.3's claim that a commit graph
     "fits as an ingestion adapter, not a separate system" -- the branch below is
     the only place in serrin that knows there is more than one kind of source.
+
+    Flags are read with getattr because `render` and `inspect` share this
+    function and do not offer the same set: inspect has no --aggregation, and
+    reaching for it directly makes the shared helper depend on which subcommand
+    happened to call it.
     """
+    def flag(name, default=None):
+        return getattr(args, name, None) or default
     if kind == "git":
-        return ingest_repo(
+        stream = ingest_repo(
             source,
-            metric=args.metric or ingest_opts.get("metric", "hash"),
-            traversal=args.traversal or ingest_opts.get("traversal", "chrono"),
-            branch_names=_split_columns(args.branches) or ingest_opts.get("branches"),
-            bit_depth=args.bit_depth or ingest_opts.get("bit_depth", 8),
+            metric=flag("metric", ingest_opts.get("metric", "hash")),
+            traversal=flag("traversal", ingest_opts.get("traversal", "chrono")),
+            branch_names=_split_columns(flag("branches")) or ingest_opts.get("branches"),
+            bit_depth=flag("bit_depth", ingest_opts.get("bit_depth", 8)),
             tempo=_tempo_from_args(args, ingest_opts),
-            limit=args.limit,
+            limit=flag("limit"),
         )
+        if recorder is not None:
+            # The graph adapter has no cell-to-byte table to show; what it has
+            # instead is branch ownership, which is the equivalent question.
+            recorder.add(
+                "ingest",
+                f"read {Path(source).name} (git)",
+                stream,
+                params={"metric": stream.meta["git"]["metric"],
+                        "traversal": stream.meta["git"]["traversal"]},
+                detail=dict(stream.meta["git"]),
+                note=(
+                    "each branch takes a value at its own commits and holds "
+                    "between them, so a quiet branch becomes a quiet voice"
+                ),
+            )
+        return stream
     return ingest_csv(
         source,
-        columns=_split_columns(args.columns) or ingest_opts.get("columns"),
-        bit_depth=args.bit_depth or ingest_opts.get("bit_depth", 8),
-        granularity=args.granularity or ingest_opts.get("granularity", 1),
-        aggregation=args.aggregation or ingest_opts.get("aggregation", "mean"),
+        columns=_split_columns(flag("columns")) or ingest_opts.get("columns"),
+        bit_depth=flag("bit_depth", ingest_opts.get("bit_depth", 8)),
+        granularity=flag("granularity", ingest_opts.get("granularity", 1)),
+        aggregation=flag("aggregation", ingest_opts.get("aggregation", "mean")),
         tempo=_tempo_from_args(args, ingest_opts),
-        log_scale=args.log_scale or bool(ingest_opts.get("log_scale", False)),
-        limit=args.limit,
+        log_scale=flag("log_scale", bool(ingest_opts.get("log_scale", False))),
+        limit=flag("limit"),
+        trace=recorder,
     )
 
 
@@ -178,7 +203,12 @@ def cmd_render(args) -> int:
         # An explicit --chain alongside --session means "that data, this chain".
         chain = _load_chain(args.chain)
 
-    stream = _read_source(args, ingest_opts, source, kind)
+    recorder = (
+        Trace(window=args.trace_window or DEFAULT_WINDOW, label=str(source))
+        if (args.trace or args.verbose)
+        else None
+    )
+    stream = _read_source(args, ingest_opts, source, kind, recorder)
     columns = stream.names
     args.input = source
 
@@ -194,7 +224,9 @@ def cmd_render(args) -> int:
         print(chain.describe())
         print(f"seed {seed}")
 
-    transformed = chain.apply(stream, seed=seed, source=source, trace=args.verbose)
+    transformed = chain.apply(
+        stream, seed=seed, source=source, trace=args.verbose, recorder=recorder
+    )
     envelope = _envelope_from_args(args, chain)
     mapping = _mapping_from_args(args, chain)
 
@@ -213,6 +245,9 @@ def cmd_render(args) -> int:
         voice_entry=voice_entry,
         delay_note=args.delay_note or chain.piece.get("delay_note", "1/8."),
     )
+
+    if recorder is not None:
+        trace_mapping(transformed, piece, recorder)
 
     out_audio = Path(args.out_audio)
     out_visual = Path(args.out_visual)
@@ -282,7 +317,12 @@ def cmd_render(args) -> int:
         )
         saved.save(args.out_session)
         print(f"session ->  {args.out_session}")
-    if args.verbose:
+    if args.trace:
+        write_json(args.trace, recorder.to_json(), compact=False)
+        print(f"trace ->    {args.trace}")
+    if args.verbose and recorder is not None:
+        print()
+        print(recorder.describe())
         print("\nintensity envelope:")
         print(envelope.ascii())
     return 0
@@ -296,7 +336,8 @@ def cmd_inspect(args) -> int:
     if not source:
         raise IngestError("pass --input for a CSV or --repo for a git repository")
     kind = "git" if args.repo else "csv"
-    stream = _read_source(args, {}, source, kind)
+    recorder = Trace(window=args.head or 16, label=str(source)) if args.trace else None
+    stream = _read_source(args, {}, source, kind, recorder)
     if kind == "git":
         print(describe_repo(stream))
         print()
@@ -318,6 +359,20 @@ def cmd_inspect(args) -> int:
         for index, name in enumerate(stream.names):
             row = " ".join(f"{v:>3}" for v in stream.data[index][: args.head])
             print(f"  {name[:18]:<18} {row}")
+
+    if recorder is not None:
+        print()
+        print(recorder.describe())
+        for stage in recorder.stages:
+            for conversion in stage.detail.get("conversions", []):
+                print(f"\n  {conversion['name']}  (column {conversion['column_index']})")
+                lo, hi = conversion["range"]["low"], conversion["range"]["high"]
+                print(f"    normalized against its own range {lo:g} .. {hi:g}")
+                print(f"    {'cell':>12}  {'parsed':>12}  {'byte':>5}")
+                for cell, parsed, value in list(
+                    zip(conversion["cells"], conversion["parsed"], conversion["bytes"])
+                )[:8]:
+                    print(f"    {str(cell)[:12]:>12}  {parsed:>12g}  {value:>5}")
     return 0
 
 
@@ -478,6 +533,15 @@ def build_parser() -> argparse.ArgumentParser:
     render.add_argument("--note-low", type=int)
     render.add_argument("--note-high", type=int)
     render.add_argument("--freq-curve", choices=["direct", "log"])
+    render.add_argument(
+        "--trace",
+        help="write a stage-by-stage trace of the render (what each pedal did)",
+    )
+    render.add_argument(
+        "--trace-window",
+        type=int,
+        help=f"frames kept per channel per stage (default {DEFAULT_WINDOW})",
+    )
     render.add_argument("--pretty", action="store_true", help="indented JSON (much bigger)")
     render.add_argument("--verbose", "-v", action="store_true")
     render.set_defaults(func=cmd_render)
@@ -500,6 +564,11 @@ def build_parser() -> argparse.ArgumentParser:
     inspect.add_argument("--beats-per-bar", type=int)
     inspect.add_argument("--limit", type=int)
     inspect.add_argument("--head", type=int, default=16, help="print N frames per voice")
+    inspect.add_argument(
+        "--trace",
+        action="store_true",
+        help="show the cell-to-byte conversion and per-channel entropy",
+    )
     inspect.set_defaults(func=cmd_inspect)
 
     # -- catalog / scales / curve / preset ----------------------------------

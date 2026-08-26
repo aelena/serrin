@@ -93,6 +93,12 @@
           </select>
           <button id="ctl-source-render">render repo</button>
         </div>
+        <div class="row">
+          <label class="inline">
+            <input id="ctl-source-trace" type="checkbox" checked /> trace the render
+          </label>
+          <button id="ctl-console-open">open console</button>
+        </div>
         <p class="micro" id="source-readout">—</p>
       </section>
 
@@ -330,6 +336,30 @@
         <ol id="pedal-list" class="pedals"></ol>
       </section>
     </aside>
+
+    <!--
+      The console. A drawer rather than another column in the panel: the panel
+      answers "what should this do" and this answers "what did it just do", and
+      a knob and a readout do not belong side by side.
+    -->
+    <section id="console" class="console" hidden aria-label="debug console">
+      <header class="console-head">
+        <strong>console</strong>
+        <nav class="console-tabs">
+          <button data-tab="log" class="on">log</button>
+          <button data-tab="pipeline">pipeline</button>
+          <button data-tab="meta">meta</button>
+          <button data-tab="frame">frame</button>
+          <button data-tab="audio">audio</button>
+        </nav>
+        <span class="spacer"></span>
+        <button id="console-pause" title="stop refreshing the live tabs">pause</button>
+        <button id="console-copy" title="copy this tab to the clipboard">copy</button>
+        <button id="console-clear">clear</button>
+        <button id="console-close" title="hide (F2)">×</button>
+      </header>
+      <div id="console-body" class="console-body"></div>
+    </section>
 
     <script type="module" src="js/main.js"></script>
   </body>

@@ -326,3 +326,165 @@ kbd {
 @media (max-width: 40rem) {
   .panel { width: 100vw; border-left: none; }
 }
+
+
+/* ------------------------------------------------------------- console --- */
+/*
+ * Denser than the panel on purpose. This is a readout to scan, not a surface to
+ * operate, so it trades comfort for how much fits on screen at once.
+ */
+.console {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: min(52vh, 34rem);
+  display: flex;
+  flex-direction: column;
+  background: rgba(6, 6, 9, 0.97);
+  border-top: 1px solid var(--panel-line);
+  font-size: 0.64rem;
+  z-index: 40;
+  cursor: default;
+}
+
+.console[hidden] { display: none; }
+
+.console-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.7rem;
+  border-bottom: 1px solid var(--panel-line);
+  flex: 0 0 auto;
+}
+
+.console-head strong {
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  font-weight: 400;
+  font-size: 0.6rem;
+  color: var(--ink-dim);
+}
+
+.console-head .spacer { flex: 1; }
+
+.console-tabs { display: flex; gap: 0.2rem; }
+
+.console-head button {
+  background: #101014;
+  border: 1px solid var(--panel-line);
+  color: var(--ink-dim);
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  padding: 0.25rem 0.55rem;
+  cursor: pointer;
+}
+
+.console-head button:hover { color: var(--ink); border-color: var(--ink-faint); }
+.console-head button.on { color: var(--accent); border-color: var(--accent); }
+
+.console-body {
+  flex: 1;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 0.6rem 0.7rem 2rem;
+}
+
+.console-body .dim { color: var(--ink-faint); line-height: 1.6; margin: 0 0 0.6rem; }
+.console-body code { color: var(--ink-dim); }
+
+.ctable {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 0.7rem;
+}
+
+.ctable th {
+  text-align: left;
+  font-weight: 400;
+  color: var(--ink-faint);
+  font-size: 0.58rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border-bottom: 1px solid var(--panel-line);
+  padding: 0.2rem 0.4rem 0.2rem 0;
+  position: sticky;
+  top: 0;
+  background: rgba(6, 6, 9, 0.97);
+}
+
+.ctable td {
+  padding: 0.12rem 0.4rem 0.12rem 0;
+  border-bottom: 1px solid rgba(35, 35, 42, 0.5);
+  white-space: nowrap;
+}
+
+.ctable td.name { color: var(--ink); }
+/* The one place a wall of numbers is the point, so let it be monospaced+tight. */
+.ctable td.values { color: var(--ink-dim); font-size: 0.6rem; white-space: pre; }
+.ctable tr.gated td { color: var(--ink-faint); }
+
+.ctable.log td.stamp { color: var(--ink-faint); width: 6rem; }
+.ctable.log td.lvl { width: 4rem; color: var(--ink-faint); text-transform: uppercase; font-size: 0.56rem; }
+.ctable.log tr.lvl-warn td { color: #ff9d5c; }
+.ctable.log tr.lvl-error td { color: #ff6b6b; }
+.ctable.log tr.lvl-render td, .ctable.log tr.lvl-system td { color: var(--accent); }
+
+.console-body .stage { margin-bottom: 1.1rem; }
+
+.console-body .stage h3 {
+  margin: 0 0 0.3rem;
+  font-size: 0.66rem;
+  font-weight: 400;
+  color: var(--ink);
+}
+
+.console-body .stage .kind {
+  color: var(--ink-faint);
+  text-transform: uppercase;
+  font-size: 0.56rem;
+  letter-spacing: 0.1em;
+}
+
+.console-body .params { color: var(--ink-dim); margin: 0 0 0.4rem; }
+.console-body .params b { color: var(--ink); font-weight: 400; }
+
+.badge {
+  border: 1px solid var(--panel-line);
+  color: var(--ink-dim);
+  padding: 0.05rem 0.3rem;
+  margin-left: 0.35rem;
+  font-size: 0.56rem;
+}
+
+.badge.up { color: #ff9d5c; border-color: #593a24; }
+.badge.down { color: #7fd1ff; border-color: #244559; }
+
+.console-body details { margin: 0.3rem 0 0.7rem; }
+
+.console-body summary {
+  cursor: pointer;
+  color: var(--ink-dim);
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: 0.3rem;
+}
+
+.console-body summary:hover { color: var(--ink); }
+
+.json {
+  margin: 0;
+  color: var(--ink-dim);
+  font-size: 0.6rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (max-width: 40rem) {
+  .console { height: 60vh; }
+  .console-head { flex-wrap: wrap; }
+}

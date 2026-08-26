@@ -248,6 +248,81 @@ dominant, whole tone, diminished, chromatic. `mod_reduce` maps values onto scale
 so `pentatonic_minor` is the default and full chromaticism is a deliberate
 choice.
 
+### The console
+
+<kbd>F2</kbd> opens a devtools drawer. The panel answers *what should this do*;
+the console answers *what did it just do* — different questions, so they get
+different surfaces.
+
+| tab | shows |
+|---|---|
+| **log** | what happened, in order — including `console.warn`/`error` the page used to swallow |
+| **pipeline** | the trace: what each stage did to the numbers |
+| **meta** | everything the render says about itself |
+| **frame** | the values going past right now, per voice, both forks |
+| **audio** | the node graph, and the calls actually being scheduled |
+
+<kbd>F2</kbd> rather than a letter because the keyboard claims every
+single-character key when it is armed.
+
+#### The trace
+
+Every stage of a render used to destroy its input. A CSV cell became a float
+became a byte became nine transformed bytes became a frequency, and only the last
+survived — fine for playing a piece, useless for understanding one. When a chain
+sounds wrong the question is always *which stage did that*, and there was no way
+to ask.
+
+```bash
+python -m serrin render -i data.csv --trace out/trace.json   # write one
+python -m serrin inspect -i data.csv --trace                 # or just look
+```
+
+Tracing is opt-in per render (`trace: true` on the endpoint, a checkbox in the
+**source** section) because it roughly doubles the work and the reply size.
+
+What each stage carries:
+
+- **ingest** — the conversion nobody could see: raw cell text → parsed number →
+  aggregated → byte, plus the range each column was normalized against, which is
+  the lossy step where magnitude is discarded and only shape survives. Also which
+  columns were dropped and why. For a git source, branch ownership instead.
+- **pedal**, one per applied pedal — the values after it, what fraction of them
+  moved, and the change in entropy.
+- **mapping** — worked examples of the fork: `byte 197 → 196.0 Hz / y 0.84 /
+  glyph '!'`. Statistics would not show the interesting claim, which is that one
+  value becomes a frequency *and*, via a rotated channel, a position.
+
+**Entropy is the headline number**, because it is what this project is actually
+about. Read down a chain it tells the story directly:
+
+```
+[0] ingest   read monitoring.csv
+[1] pedal    delta      87% moved, H -1.89   <- strips absolute level
+[2] pedal    xor_mask  100% moved, H +3.18   <- shreds what structure was left
+[3] pedal    bitcrush   97% moved, H -3.29   <- collapses to 16 values
+[4] pedal    caesar      88% moved, H +2.79   <- the moving shift re-spreads it
+[5] mapping  forked export
+```
+
+Values shown are a window (first 96 frames by default); statistics are over the
+whole stream. The format says which is which, because a trace quietly reporting
+window statistics would look authoritative and be wrong.
+
+#### Inspecting the sound
+
+The **audio** tab shows the live node graph and a journal of what was scheduled —
+frequency, amplitude, and whether each frame retriggered or *slid* (the decision
+that turns held data into a drone). **copy** emits runnable JavaScript.
+
+One caveat stated plainly, in the tab as well as here: **serrin does not generate
+JavaScript.** The sound comes from a fixed graph driven by data, so there is no
+generated source to dump. What **copy** produces is a *reconstruction* — a
+self-contained snippet that rebuilds the effect chain and replays the events
+actually scheduled, with times made relative so it runs immediately. A test parses
+it with `vm.Script` to make sure it is real code rather than something that looks
+like it.
+
 ### Recording a take
 
 **record** in the panel captures what you actually hear — keyboard playing and a
@@ -443,6 +518,7 @@ No framework, no bundler. ES modules straight from `web/js/`.
 | `session.js` | capture/restore, downloads, autosave |
 | `recorder.js` | MediaRecorder takes, audio or audio+video |
 | `source.js` | uploads and repo paths, posted to the render endpoint |
+| `console.js` | the devtools drawer, and the JS reconstruction |
 | `panel.js` | the author panel |
 | `main.js` | wiring, URL params, keyboard |
 
@@ -493,8 +569,9 @@ and hiding it changes nothing about what is playing. It lives in the same
 document as the stage rather than a second window because live envelope drawing
 has to be on the engine's clock.
 
-**Keyboard:** <kbd>space</kbd> play/pause · <kbd>p</kbd> panel · <kbd>i</kbd>
-invert · <kbd>f</kbd> fullscreen · <kbd>1</kbd>–<kbd>8</kbd> mute a voice.
+**Keyboard:** <kbd>space</kbd> play/pause · <kbd>p</kbd> panel · <kbd>F2</kbd>
+console · <kbd>i</kbd> invert · <kbd>f</kbd> fullscreen · <kbd>1</kbd>–<kbd>8</kbd>
+mute a voice.
 
 **URL params:** `?preset=` · `?audio=&visual=` · `?panel=1` · `?autoplay=1` ·
 `?speed=`.
@@ -507,7 +584,7 @@ invert · <kbd>f</kbd> fullscreen · <kbd>1</kbd>–<kbd>8</kbd> mute a voice.
 python tests/run_all.py          # both suites, and they cross-check each other
 ```
 
-186 Python tests, 70 Node tests, plus a cross-language round trip. Weighted toward the two properties the aesthetic
+223 Python tests, 85 Node tests, plus a cross-language round trip. Weighted toward the two properties the aesthetic
 depends on: **determinism** (a promise that is not tested is a wish) and
 **invariants** (a pedal that breaks one fails hundreds of frames later, in the
 browser, which is a miserable way to find out).
@@ -524,7 +601,7 @@ the pipeline rendered.
 
 ```
 serrin/           the pipeline: rng, scales, tempo, ingest, ingest_git,
-                  pedals, chain, envelope, export, session, cli
+                  pedals, chain, envelope, export, trace, session, cli
 presets/          chain definitions
 scripts/          sample data generator, dev server
 web/              the runtime (index.html, style.css, js/)

@@ -412,6 +412,71 @@ def build_piece(
     )
 
 
+def trace_mapping(stream: Stream, piece: "Piece", recorder, examples: int = 8) -> None:
+    """Record the fork: the same byte read two different ways.
+
+    Worked examples rather than statistics, because the interesting claim here is
+    not distributional -- it is that a single value becomes a frequency *and*, via
+    a different channel, a position, and that those two are not the same number
+    in disguise. Six rows of "byte 214 -> 415.3 Hz / y 0.62" makes that visible
+    in a way a correlation coefficient does not.
+    """
+    if recorder is None or not stream.n_voices:
+        return
+
+    step = max(1, stream.length // max(1, examples))
+    frames = list(range(0, min(stream.length, step * examples), step))
+    rows = []
+    for frame in frames:
+        row = {"frame": frame, "voices": []}
+        for index, name in enumerate(stream.names):
+            audio = piece.audio["voices"][index]
+            visual = piece.visual["voices"][index]
+            row["voices"].append(
+                {
+                    "voice": name,
+                    "byte": stream.data[index][frame],
+                    "freq": audio["freq"][frame],
+                    "amp": audio["amp"][frame],
+                    "dur": audio["dur"][frame],
+                    "gate": audio["gate"][frame],
+                    "x": visual["x"][frame],
+                    "y": visual["y"][frame],
+                    "density": visual["density"][frame],
+                    "glyph": piece.visual["glyphs"][visual["glyph"][frame]],
+                    "glitch": visual["glitch"][frame],
+                }
+            )
+        rows.append(row)
+
+    config = piece.meta.get("mapping", {})
+    recorder.add(
+        "mapping",
+        "forked export",
+        params={
+            "note_low": config.get("note_low"),
+            "note_high": config.get("note_high"),
+            "freq_curve": config.get("freq_curve"),
+            "quantize_to": config.get("quantize_to"),
+            "channel_rotation": config.get("channel_rotation"),
+        },
+        detail={
+            "examples": rows,
+            "audio_reads": "absolute value (state); amplitude from change; gate on movement",
+            "visual_reads": (
+                "delta and local spread (change, turbulence); position from a "
+                "rotated channel, so a voice is not positioned by its own pitch"
+            ),
+            "scale": piece.meta.get("scale"),
+        },
+        note=(
+            "one byte, two readings. Section 3.5 forbids audio and visual from "
+            "becoming the same number disguised twice, and the rotation is what "
+            "enforces it."
+        ),
+    )
+
+
 def write_json(path: str | Path, document: dict, compact: bool = True) -> int:
     """Write and return the byte count. Compact by default -- these get big."""
     path = Path(path)

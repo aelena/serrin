@@ -237,6 +237,72 @@ which did not crash, did not lose data visibly, and quietly produced four commit
 all reporting identical churn. Separator at the front fixes it. The lesson is
 that a parser for a format with trailing blocks wants leading delimiters.
 
+## The trace, and what the pipeline was throwing away
+
+Asked for a devtools-style console, the interesting problem turned out not to be
+the UI. It was that **there was nothing to show**. Every stage of a render
+destroyed its input: a cell became a float became a byte became nine
+successively transformed bytes became a frequency, and the export carried only
+the last of those. The pipeline had no memory of what it had done.
+
+So most of the work was upstream of the console -- making each stage record
+itself -- and the shape of that recording needed two decisions.
+
+**Values are a window; statistics are not.** A nine-pedal chain over eight voices
+and 2400 frames is 170k numbers per stage, and shipping all of it would make a
+trace larger than the render it describes. So each stage keeps the first 96
+frames plus full statistics over everything. The format labels which is which,
+because a trace that quietly reported *window* statistics would look
+authoritative and be wrong -- worse than no trace at all.
+
+**Entropy is the measurement worth having.** This is a project about entropy, and
+Shannon entropy per channel turns "this chain sounds too chaotic" into a stage
+number. Read down `gritty_01` it narrates itself: `delta` −1.89 bits (absolute
+level stripped), `xor_mask` +3.18 (structure shredded), `bitcrush` −3.29
+(collapsed to sixteen values), `caesar` +2.79 (the moving shift re-spreads it).
+Nothing else in the trace explains a chain that quickly.
+
+The `changed_fraction` per stage earns its place for the opposite reason: a pedal
+that moved 0% of values did nothing, whatever its parameters claim. `cross_mix`
+at `depth: 0.0` is a bypass, and now it says so.
+
+For the mapping stage, worked examples rather than statistics -- `byte 197 → 196
+Hz / y 0.84 / glyph '!'`. The claim being demonstrated is not distributional; it
+is that one value becomes a frequency *and*, through a rotated channel, a
+position, and that those are not the same number twice. Six rows show that in a
+way a correlation coefficient does not, and there is a test asserting the
+examples match the exported documents -- a trace that disagreed with the render
+would be actively misleading.
+
+## "Inspect the generated JS", and the honest version of it
+
+The request was to inspect the JavaScript that produces the sounds. There isn't
+any: the sound comes from a fixed graph driven by data, so there is no generated
+source to dump.
+
+Three ways to respond to that. Pretend otherwise and pretty-print something that
+looks like generated code -- dishonest. Say "not applicable" -- unhelpful, since
+the underlying question is entirely reasonable. Or work out what would actually
+answer it.
+
+What answers it is a *reconstruction*. The audio engine now journals what it
+schedules -- frequency, amplitude, envelope, and crucially whether each frame
+retriggered or slid, which is decided inside `Voice.play` and is invisible from
+outside it. From that journal the console emits a self-contained snippet that
+rebuilds the effect chain and replays those events, with times made relative so
+it runs immediately rather than scheduling everything in the past.
+
+It is genuinely runnable, which is the difference between a tool and a
+decoration, and there is a test that parses it with `vm.Script` -- a
+template-string code generator is exactly the sort of thing that emits
+plausible-looking broken code. The tab and the snippet header both say it is a
+reconstruction. Calling it that rather than "the generated code" is the whole
+point.
+
+Journalling is off unless the audio tab is open: eight voices at twelve frames a
+second is a hundred retained objects a second, which is not a cost to pay while
+someone is listening to a piece.
+
 ## Recording, and why not the clean way
 
 There are two ways to get audio out of a Web Audio graph, and the tempting one is

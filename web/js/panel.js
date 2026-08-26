@@ -193,7 +193,11 @@ export class Panel {
     const runRender = async (request, label) => {
       this._sourceMessage(`rendering ${label}…`);
       try {
-        const result = await requestRender({ preset: sourcePreset.value, ...request });
+        const result = await requestRender({
+          preset: sourcePreset.value,
+          trace: $('ctl-source-trace').checked,
+          ...request,
+        });
         this._sourceMessage(describeRender(result));
         // Adopted as a preset entry so it can be switched back to later, and so
         // the reload path is the one that already works.
@@ -203,6 +207,8 @@ export class Panel {
         this._sourceMessage(String(error.message ?? error), true);
       }
     };
+
+    $('ctl-console-open').addEventListener('click', () => app.console?.toggle(true));
 
     $('ctl-source-csv').addEventListener('click', () => $('ctl-source-file').click());
     $('ctl-source-file').addEventListener('change', async (event) => {
@@ -253,6 +259,7 @@ export class Panel {
     $('ctl-session-save').addEventListener('click', () => {
       const session = downloadSession(app, $('ctl-session-notes').value);
       this._sessionMessage(`saved ${session.label || 'session'}`);
+      app.console?.log(`session saved: ${session.label}`, 'system');
     });
 
     $('ctl-session-load').addEventListener('click', () => $('ctl-session-file').click());
@@ -261,6 +268,11 @@ export class Panel {
       if (!file) return;
       try {
         const report = applySession(app, await readSessionFile(file));
+        app.console?.log(
+          `session loaded: ${file.name} — applied ${report.applied.join(', ') || 'nothing'}`,
+          report.warnings.length ? 'warn' : 'system',
+        );
+        for (const warning of report.warnings) app.console?.log(warning, 'warn');
         this.refresh();
         this._sessionMessage(
           [

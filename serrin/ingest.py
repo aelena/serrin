@@ -238,11 +238,17 @@ def ingest_csv(
     log_scale: bool = False,
     limit: int | None = None,
     delimiter: str | None = None,
+    trace=None,
 ) -> Stream:
     """Read a CSV into a Stream.
 
     ``tempo`` and ``rate`` are two ways of saying the same thing; an explicit
     tempo wins, since it carries swing and metre that a bare rate cannot.
+
+    ``trace``, if given, records the cell-to-byte conversion for each column --
+    the raw text, the parsed number, the range it was normalized against, and
+    the byte that came out. That chain of four is the single most opaque step in
+    the pipeline and the one people most need to see.
     """
     grid = Tempo.parse(tempo) if tempo is not None else Tempo.from_rate(rate or 8.0)
     header, rows = read_rows(path, delimiter)
@@ -255,20 +261,51 @@ def ingest_csv(
 
     channels: list[list[int]] = []
     names: list[str] = []
+    conversions: list[dict] = []
+    window = getattr(trace, "window", 0) or 0
+
     for idx in indices:
         raw: list[float] = []
+        gaps = 0
         last = 0.0
         for row in rows:
             value = _parse_number(row[idx]) if idx < len(row) else None
             if value is None:
                 value = last  # hold the previous sample; a gap is not a zero
+                gaps += 1
             last = value
             raw.append(value)
-        raw = aggregate(raw, granularity, aggregation)
-        channels.append(quantize(raw, bit_depth, log_scale))
+
+        parsed = list(raw)
+        aggregated = aggregate(raw, granularity, aggregation)
+        bytes_out = quantize(aggregated, bit_depth, log_scale)
+        channels.append(bytes_out)
         names.append(header[idx])
 
-    return Stream(
+        if window:
+            # Recorded per column rather than per frame: the question is "what
+            # happened to this column", and a frame-major table would bury it.
+            lo, hi = (min(aggregated), max(aggregated)) if aggregated else (0.0, 0.0)
+            conversions.append(
+                {
+                    "name": header[idx],
+                    "column_index": idx,
+                    "cells": [
+                        (row[idx] if idx < len(row) else "") for row in rows[:window]
+                    ],
+                    "parsed": [round(v, 6) for v in parsed[:window]],
+                    "aggregated": [round(v, 6) for v in aggregated[:window]],
+                    "bytes": bytes_out[:window],
+                    "range": {"low": lo, "high": hi, "log_scale": bool(log_scale)},
+                    "unparseable_cells": gaps,
+                    "note": (
+                        "each channel is normalized against its own range, so "
+                        "magnitude is discarded and only shape survives"
+                    ),
+                }
+            )
+
+    stream = Stream(
         names=names,
         data=channels,
         bit_depth=bit_depth,
@@ -284,6 +321,37 @@ def ingest_csv(
             "log_scale": log_scale,
         },
     )
+
+    if trace is not None:
+        stage = trace.add(
+            "ingest",
+            f"read {Path(path).name}",
+            stream,
+            params={
+                "columns": names,
+                "bit_depth": bit_depth,
+                "granularity": granularity,
+                "aggregation": aggregation if granularity > 1 else None,
+                "log_scale": log_scale,
+            },
+            detail={
+                "rows_read": len(rows),
+                "columns_available": header,
+                "columns_chosen": names,
+                "columns_dropped": [
+                    name for i, name in enumerate(header) if i not in indices
+                ],
+                "conversions": conversions,
+            },
+            note=(
+                "cell text -> parsed number -> aggregated -> byte. Columns that "
+                "are constant or monotonic are dropped by automatic selection: a "
+                "flat line is not a voice, and a timestamp has variance but no shape."
+            ),
+        )
+        del stage
+
+    return stream
 
 
 def auto_seed(path: str | Path, rows: int = SEED_ROWS) -> int:

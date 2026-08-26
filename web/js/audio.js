@@ -41,6 +41,9 @@ function crushCurve(bits, length = 4096) {
 
 class Voice {
   constructor(ctx, destination, index, waveform, name) {
+    // Set by the engine when journalling is on. Kept as a plain field rather
+    // than a callback per event so the hot path costs one null check.
+    this.journal = null;
     this.index = index;
     this.name = name;
     this.ctx = ctx;
@@ -100,6 +103,26 @@ class Voice {
     g.setValueAtTime(Math.max(0.0001, g.value), time);
     g.linearRampToValueAtTime(amp, time + attack);
     g.setTargetAtTime(0.0001, time + attack + hold, Math.max(0.01, seconds * 0.3));
+
+    this.journal?.push({
+      time,
+      voice: this.index,
+      name: this.name,
+      waveform: this.osc.type,
+      freq: safeFreq,
+      amp,
+      attack,
+      hold,
+      retrigger,
+      // The literal calls, in order, so the reconstruction is a transcript
+      // rather than an interpretation of one.
+      calls: retrigger
+        ? [`osc.frequency.setValueAtTime(${safeFreq.toFixed(3)}, t)`]
+        : [
+            `osc.frequency.setTargetAtTime(${safeFreq.toFixed(3)}, t, ` +
+              `${Math.max(0.008, seconds * 0.35).toFixed(4)})`,
+          ],
+    });
   }
 
   setLevel(value, time) {
@@ -131,6 +154,65 @@ export class AudioEngine {
     this.mutes = new Set();
     // "Audio-vs-visual mapping balance" (4.5): audio's share of the weight.
     this.balance = 0.5;
+
+    // A ring of recently scheduled events, for the console. Off by default:
+    // eight voices at twelve frames a second is a hundred objects a second, and
+    // nobody watching a piece needs them.
+    this.journal = [];
+    this.journalLimit = 400;
+    this.journalEnabled = false;
+  }
+
+  /**
+   * Start or stop journalling.
+   *
+   * Threaded down into the voices rather than wrapped around `update()`, so what
+   * gets recorded is what was actually scheduled -- including the gate/slide
+   * decision, which `update()` does not know about.
+   */
+  setJournalling(on) {
+    this.journalEnabled = Boolean(on);
+    const sink = this.journalEnabled ? this.journal : null;
+    for (const voice of this.voices) voice.journal = sink;
+    if (!this.journalEnabled) this.journal.length = 0;
+  }
+
+  _trimJournal() {
+    const overflow = this.journal.length - this.journalLimit;
+    if (overflow > 0) this.journal.splice(0, overflow);
+  }
+
+  /** A description of the effect chain, for the console's graph view. */
+  graph() {
+    if (!this.started) return null;
+    return {
+      sampleRate: this.ctx.sampleRate,
+      state: this.ctx.state,
+      baseLatency: this.ctx.baseLatency ?? null,
+      nodes: [
+        { id: 'voice[n]', type: 'OscillatorNode', detail: 'one per data voice, persistent' },
+        { id: 'voice[n].filter', type: 'BiquadFilterNode', detail: 'lowpass, opens with intensity' },
+        { id: 'voice[n].gain', type: 'GainNode', detail: 'per-event envelope' },
+        { id: 'bus', type: 'GainNode', detail: 'where the data voices land' },
+        { id: 'crusher', type: 'WaveShaperNode', detail: `quantizing curve, ${this.crushBits} bits, oversample none` },
+        { id: 'tone', type: 'BiquadFilterNode', detail: `lowpass ${this.filterCutoff.toFixed(0)} Hz` },
+        { id: 'delaySend', type: 'GainNode', detail: `mix ${this.delayMix.toFixed(2)}` },
+        { id: 'delay', type: 'DelayNode', detail: `${this.delayNote} = ${(this.delaySeconds() * 1000).toFixed(0)} ms` },
+        { id: 'feedback', type: 'GainNode', detail: '0.34, loops into delay' },
+        { id: 'keyboardBus', type: 'GainNode', detail: 'played notes' },
+        { id: 'keyClean', type: 'GainNode', detail: `post-crusher path (${this.keyboardCrushed ? 'off' : 'on'})` },
+        { id: 'keyCrushed', type: 'GainNode', detail: `pre-crusher path (${this.keyboardCrushed ? 'on' : 'off'})` },
+        { id: 'master', type: 'GainNode', detail: this.masterGain.toFixed(2) },
+      ],
+      edges: [
+        'voice[n].osc -> filter -> gain -> level -> bus',
+        'bus -> crusher -> tone -> master -> destination',
+        'tone -> delaySend -> delay -> master',
+        'delay -> feedback -> delay',
+        'keyboardBus -> keyClean -> tone',
+        'keyboardBus -> keyCrushed -> bus',
+      ],
+    };
   }
 
   /** Must be called from a user gesture -- browsers refuse audio otherwise. */
@@ -202,6 +284,9 @@ export class AudioEngine {
     this.voices = audioVoices.map(
       (voice, index) => new Voice(ctx, this.bus, index, voice.waveform, voice.name),
     );
+    // The voices only exist once start() runs, so a journalling flag set before
+    // then has to be re-applied here or it would silently do nothing.
+    if (this.journalEnabled) this.setJournalling(true);
 
     this.started = true;
   }
@@ -246,6 +331,8 @@ export class AudioEngine {
       );
       voice.play(time, event.freq, Math.min(1, amp), event.dur * secondsPerFrame, event.gate === 1);
     }
+
+    if (this.journalEnabled) this._trimJournal();
 
     // Global grit tracks intensity too: the doc wants aggression to rise into
     // the climax and back off at the close (5.1-A).
@@ -293,6 +380,27 @@ export class AudioEngine {
     osc.connect(gain).connect(this.keyboardBus);
     osc.start(when);
     osc.stop(end);
+
+    if (this.journalEnabled) {
+      this.journal.push({
+        time: when,
+        voice: -1, // not a data voice: this one came from a key
+        name: 'keyboard',
+        waveform: osc.type,
+        freq,
+        amp: velocity,
+        attack,
+        hold: decay,
+        retrigger: true,
+        midi,
+        calls: [
+          `osc.type = '${osc.type}'`,
+          `osc.frequency.value = ${freq.toFixed(3)}`,
+          `gain.gain.linearRampToValueAtTime(${velocity.toFixed(3)}, t + ${attack})`,
+        ],
+      });
+      this._trimJournal();
+    }
     osc.onended = () => {
       try {
         gain.disconnect();
