@@ -237,6 +237,64 @@ which did not crash, did not lose data visibly, and quietly produced four commit
 all reporting identical churn. Separator at the front fixes it. The lesson is
 that a parser for a format with trailing blocks wants leading delimiters.
 
+## Recording, and why not the clean way
+
+There are two ways to get audio out of a Web Audio graph, and the tempting one is
+wrong for this project.
+
+`OfflineAudioContext` renders faster than real time, deterministically, to
+uncompressed samples. It is the obvious choice for a *generator*. But it renders
+a graph, not a performance — it cannot capture anything played on the keyboard or
+an envelope drawn while listening, because in an offline render there is no
+listening. It also means building the node graph a second time, which is a second
+place for the sound to diverge from what the piece actually is.
+
+`MediaRecorder` taps the live master and captures exactly what was heard,
+including the performance. It costs real time and a lossy codec. Given that the
+keyboard and the live stroke are the two features that make this a performance
+tool rather than a batch renderer, capturing the performance is the default that
+matches what the thing is. The offline master is a later addition, not a
+replacement.
+
+One implementation note worth keeping: the tap is created once and kept.
+Connecting a fresh `MediaStreamAudioDestinationNode` per take would leave the
+previous ones attached to the master, quietly summing.
+
+## The upload endpoint, and the port that had to change
+
+The browser cannot transform anything: the pedals are Python. Three ways out, and
+the middle one is the only honest one.
+
+Porting the chain to JavaScript is roadmap step 5, and doing it *for this* would
+have been the wrong reason. It duplicates nine pedals, ingestion and the export
+mapping, and creates a second source of truth for the aesthetic — two
+implementations that drift, with the *sound* as the thing that drifts. Staying
+CLI-only was the other option, and it works, but "drop the file in the folder and
+re-run the command" is not a source picker.
+
+So: the browser reads the file as text, posts JSON, and the one real pipeline
+renders it. JSON rather than multipart because hand-rolling a multipart parser for
+a one-field form is a poor trade; the cost is that the CSV is fully buffered,
+hence the size cap.
+
+The endpoint also writes a session next to the pair, so an uploaded render is
+reproducible from the moment it exists rather than only once someone remembers to
+save one.
+
+**The bind address had to change.** The server listened on `0.0.0.0` from the
+start, which was unremarkable while it only served static files. An endpoint that
+writes files it is given and runs renders on request is a different proposition,
+so the default is now `127.0.0.1`, with `--host` as an explicit opt-out that
+prints what it is doing.
+
+**And the endpoint found a real bug elsewhere.** `Chain.resolve_seed` assumed the
+source was a CSV and opened it to hash its first rows. The CLI had quietly worked
+around this by special-casing repositories before calling it — so the *other*
+callers, the endpoint and any session re-render, tried to read a directory as a
+file and died on `PermissionError`. The fix was to move the dispatch into
+`resolve_seed` where it belongs; one place that knows how to seed from whatever
+the source is, rather than three callers each remembering to special-case it.
+
 ## Sessions, and the seam that had to be visible
 
 The temptation was one file that "saves the piece". That would have been a lie,

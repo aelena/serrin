@@ -260,6 +260,17 @@ def to_visual(stream: Stream, config: MappingConfig | None = None) -> dict:
     return {"glyphs": GLYPHS, "voices": voices}
 
 
+def _source_label(stream: Stream) -> str:
+    """A short name for the source, for the piece's label.
+
+    Resolved before taking the name, because a repository given as ``.`` has an
+    empty stem and would otherwise leave the label starting with a bare ``+``.
+    """
+    raw = str(stream.meta.get("source") or "stream")
+    path = Path(raw)
+    return path.stem or path.resolve().name or "stream"
+
+
 # ---------------------------------------------------------------------------
 # what key is this piece in?
 # ---------------------------------------------------------------------------
@@ -341,7 +352,7 @@ def build_piece(
         "generator": "serrin",
         # The doc's identity for a piece: source + chain + seed.
         "label": (
-            f"{Path(str(stream.meta.get('source', 'stream'))).stem}"
+            f"{_source_label(stream)}"
             f"+{stream.meta.get('chain_name', 'raw')}"
             f"+{stream.meta.get('seed', 0)}"
         ),

@@ -248,6 +248,40 @@ dominant, whole tone, diminished, chromatic. `mod_reduce` maps values onto scale
 so `pentatonic_minor` is the default and full chromaticism is a deliberate
 choice.
 
+### Recording a take
+
+**record** in the panel captures what you actually hear — keyboard playing and a
+live-drawn envelope included — in real time, to WebM/Opus. Tick *with video* and
+the canvas comes along in the same file, tracks in sync.
+
+It is deliberately not a lossless master. The other option,
+`OfflineAudioContext`, renders faster than real time to uncompressed samples, but
+it renders a *graph* rather than a performance: it cannot capture live playing,
+because there is no live. Since the keyboard and the live stroke are what make
+serrin a performance tool rather than a batch renderer, capturing the performance
+is the more honest default. The offline master is the upgrade path.
+
+### Rendering something new from the browser
+
+The **source** section takes a CSV you upload or a path to a git repository, and
+hands it to the pipeline. Needs `scripts/serve.py` running, because the pedals
+live in Python.
+
+That is the honest middle option. Porting the chain to JavaScript (roadmap step
+5) would duplicate nine pedals, ingestion and the export mapping, and create a
+*second source of truth for the aesthetic* — two implementations that drift, with
+the sound as the thing that drifts. Posting the file to the one real pipeline
+keeps a single implementation and costs one endpoint.
+
+`POST /api/render` takes JSON: `{csv, name}` or `{repo}`, plus optional `preset`,
+`preset_json`, `tempo`, `columns`, `seed`, `metric`, `traversal`. It writes the
+pair *and a session* under `out/uploads/`, and returns the URLs — so the page
+loads the result exactly like a preset, with no second code path in the runtime.
+
+**The server binds to localhost.** It writes files it is given and runs renders
+on request; that is fine on your own machine and not fine on a shared network.
+`--host 0.0.0.0` exists and says what it is doing when you use it.
+
 ### Sessions: keeping what you found
 
 The panel used to be a place to discover settings you could not keep. **save
@@ -407,6 +441,8 @@ No framework, no bundler. ES modules straight from `web/js/`.
 | `envelope.js` | intensity curves, stroke capture, voice gating |
 | `keyboard.js` | live playing: modes, note pool, which keys it claims |
 | `session.js` | capture/restore, downloads, autosave |
+| `recorder.js` | MediaRecorder takes, audio or audio+video |
+| `source.js` | uploads and repo paths, posted to the render endpoint |
 | `panel.js` | the author panel |
 | `main.js` | wiring, URL params, keyboard |
 
@@ -471,7 +507,7 @@ invert · <kbd>f</kbd> fullscreen · <kbd>1</kbd>–<kbd>8</kbd> mute a voice.
 python tests/run_all.py          # both suites, and they cross-check each other
 ```
 
-166 Python tests, 70 Node tests, plus a cross-language round trip. Weighted toward the two properties the aesthetic
+186 Python tests, 70 Node tests, plus a cross-language round trip. Weighted toward the two properties the aesthetic
 depends on: **determinism** (a promise that is not tested is a wish) and
 **invariants** (a pedal that breaks one fails hundreds of frames later, in the
 browser, which is a miserable way to find out).
@@ -514,6 +550,9 @@ Honest accounting of what is specified but not yet real:
 - **Audio bitcrush** is a WaveShaper quantizing curve, which gets the stepped,
   aliased character but not true sample-rate reduction. That needs an
   AudioWorklet.
+- **A lossless master** — recording is real-time WebM/Opus via `MediaRecorder`.
+  An `OfflineAudioContext` render would be faster and uncompressed but cannot
+  capture live playing.
 - **WebGL** is untouched — Canvas2D is holding up fine at eight voices and a
   ~240-column waterfall, as §4.1 predicted it might.
 - **Tides and UVB-76** — the ingestion layer is where they plug in; CSV and git

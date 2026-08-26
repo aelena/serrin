@@ -127,10 +127,24 @@ class Chain:
 
     # -- seeds --------------------------------------------------------------
     def resolve_seed(self, source: str | Path | None = None) -> int:
-        """``fixed`` wins; ``auto`` hashes the source's first rows; else the name."""
+        """``fixed`` wins; ``auto`` hashes the head of the source; else the name.
+
+        The dispatch on source kind lives here rather than in each caller. It
+        started out in the CLI, which meant every *other* caller -- the upload
+        endpoint, a session re-render -- silently tried to read a repository
+        directory as a CSV and died on a PermissionError. One place that knows
+        how to seed from "whatever the source is" is the fix; three callers each
+        remembering to special-case it is not.
+        """
         if self.seed_override is not None:
             return int(self.seed_override) & ((1 << 64) - 1)
         if self.seed_mode == "auto" and source is not None:
+            if Path(source).is_dir():
+                # Imported here: chain.py is on the import path of everything,
+                # and the git adapter shells out to git.
+                from .ingest_git import auto_seed_repo
+
+                return auto_seed_repo(source)
             return auto_seed(source)
         return seed_from_bytes(self.name.encode("utf-8"))
 

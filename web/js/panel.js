@@ -32,6 +32,7 @@ import {
   loadAutosave,
   readSessionFile,
 } from './session.js';
+import { describeRender, readTextFile, requestRender } from './source.js';
 import { Tempo } from './tempo.js';
 
 const $ = (id) => document.getElementById(id);
@@ -77,6 +78,7 @@ export class Panel {
     this._paintKeyboard();
     this._paintEnvelope();
     this._paintSession();
+    this._paintRecord();
   }
 
   /** Push the loaded piece's tempo into the controls without firing handlers. */
@@ -92,6 +94,22 @@ export class Panel {
   }
 
   /** Scale, pool size and last note played -- everything the player needs. */
+  _sourceMessage(text, warning = false) {
+    const node = $('source-readout');
+    node.textContent = text;
+    node.style.color = warning ? '#ff9d5c' : '';
+  }
+
+  _paintRecord() {
+    const recorder = this.app.recorder;
+    if (!recorder) return;
+    $('record-readout').textContent = recorder.describe();
+    const button = $('ctl-record');
+    button.textContent = recorder.recording ? 'stop' : 'record';
+    button.classList.toggle('on', recorder.recording);
+    $('ctl-record-save').disabled = !recorder.lastTake || recorder.recording;
+  }
+
   /** One line of feedback for the session buttons. Warnings read differently. */
   _sessionMessage(text, warning = false) {
     const node = $('session-readout');
@@ -160,6 +178,75 @@ export class Panel {
     }
     presetSelect.value = app.presetId ?? app.presets[0]?.id ?? '';
     presetSelect.addEventListener('change', () => app.loadPreset(presetSelect.value));
+
+    // -- source. Renders happen in Python, so every button here is a request.
+    const sourcePreset = $('ctl-source-preset');
+    sourcePreset.replaceChildren();
+    for (const preset of app.presets) {
+      const option = document.createElement('option');
+      option.value = preset.id;
+      option.textContent = preset.id;
+      sourcePreset.append(option);
+    }
+    sourcePreset.value = app.presetId ?? app.presets[0]?.id ?? '';
+
+    const runRender = async (request, label) => {
+      this._sourceMessage(`rendering ${label}…`);
+      try {
+        const result = await requestRender({ preset: sourcePreset.value, ...request });
+        this._sourceMessage(describeRender(result));
+        // Adopted as a preset entry so it can be switched back to later, and so
+        // the reload path is the one that already works.
+        await app.adoptRender(result);
+        this.refresh();
+      } catch (error) {
+        this._sourceMessage(String(error.message ?? error), true);
+      }
+    };
+
+    $('ctl-source-csv').addEventListener('click', () => $('ctl-source-file').click());
+    $('ctl-source-file').addEventListener('change', async (event) => {
+      const file = event.target.files?.[0];
+      event.target.value = '';
+      if (!file) return;
+      try {
+        const csv = await readTextFile(file);
+        await runRender({ csv, name: file.name }, file.name);
+      } catch (error) {
+        this._sourceMessage(String(error.message ?? error), true);
+      }
+    });
+
+    $('ctl-source-render').addEventListener('click', async () => {
+      const repo = $('ctl-source-repo').value.trim();
+      if (!repo) {
+        this._sourceMessage('type a repository path first', true);
+        return;
+      }
+      await runRender(
+        {
+          repo,
+          metric: $('ctl-source-metric').value,
+          traversal: $('ctl-source-traversal').value,
+        },
+        repo,
+      );
+    });
+
+    // -- record
+    $('ctl-record').addEventListener('click', () => {
+      const recorder = app.recorder;
+      if (recorder.recording) {
+        recorder.stop();
+        return;
+      }
+      const started = recorder.start({ video: $('ctl-record-video').checked });
+      if (!started) this._paintRecord();
+    });
+    $('ctl-record-save').addEventListener('click', () => {
+      const name = app.recorder.download(app.reader.meta?.label ?? 'serrin');
+      if (name) this._sessionMessage(`saved ${name}`);
+    });
 
     // -- session. The one place the render/runtime seam is visible to the
     // author, so the buttons are named for which half they keep.
@@ -644,6 +731,7 @@ export class Panel {
     }
 
     if (this.app.keyboard.enabled) this._paintKeyboard();
+    if (this.app.recorder?.recording) this._paintRecord();
     this._paintSession();
 
     const counter = this.app.transport.counter;

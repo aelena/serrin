@@ -15,6 +15,7 @@
 
 import { AudioEngine } from './audio.js';
 import { KeyboardEngine } from './keyboard.js';
+import { Recorder } from './recorder.js';
 import { Envelope, ReactiveIntensity, voiceGates } from './envelope.js';
 import { loadStreams } from './reader.js';
 import { Transport } from './transport.js';
@@ -76,6 +77,7 @@ const app = {
   entryStrategy: 'variance',
   entryOrder: [],
   keyboard: null,
+  recorder: null,
 
   /** Replace the intensity curve. Stroke, equation or archetype -- same call. */
   setEnvelope(envelope) {
@@ -97,6 +99,27 @@ const app = {
   setEntryStrategy(strategy) {
     this.entryStrategy = strategy;
     this.entryOrder = computeEntryOrder(this.reader, strategy);
+  },
+
+  /**
+   * Take on a pair the server just rendered.
+   *
+   * Registered as a preset first, then loaded through the normal path -- so
+   * there is one way to load a piece, and an uploaded render is switchable in
+   * the preset dropdown like anything else.
+   */
+  async adoptRender(result) {
+    const id = result.label || `render-${this.presets.length}`;
+    const entry = {
+      id,
+      audio: result.audio,
+      visual: result.visual,
+      note: `rendered from ${result.kind} through ${result.chain}`,
+    };
+    const existing = this.presets.findIndex((preset) => preset.id === id);
+    if (existing >= 0) this.presets[existing] = entry;
+    else this.presets.push(entry);
+    await this.loadPreset(id);
   },
 
   async loadPreset(id) {
@@ -174,6 +197,10 @@ function adopt(reader) {
     app.keyboard = new KeyboardEngine(app.audio, reader);
   }
   app.keyboard.onNote = (played) => app.visual.flashKey(played);
+  // The recorder holds a tap on the audio graph, so it is rebuilt with the
+  // engine rather than kept across a preset switch.
+  app.recorder = new Recorder(app.audio, stage);
+  app.recorder.onStateChange = () => app.panel?._paintRecord();
   app.visual.showKeys = app.keyboard.showKeys;
   app.envelope = Envelope.fromExport(reader.audio.envelope);
   app.reactive = new ReactiveIntensity(reader.seed);

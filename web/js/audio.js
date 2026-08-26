@@ -304,6 +304,23 @@ export class AudioEngine {
     return { midi, freq, when, end };
   }
 
+  /**
+   * A MediaStream carrying the master output, for recording.
+   *
+   * Hung off `master` rather than off `destination`, because there is no way to
+   * tap the destination -- and created lazily and kept, because connecting a
+   * second MediaStreamAudioDestinationNode on every take would leave the old
+   * ones attached to the graph, quietly summing.
+   */
+  recordingStream() {
+    if (!this.started) return null;
+    if (!this._tap) {
+      this._tap = this.ctx.createMediaStreamDestination();
+      this.master.connect(this._tap);
+    }
+    return this._tap.stream;
+  }
+
   /** Route played notes through the bitcrusher, or around it. */
   setKeyboardCrushed(crushed) {
     this.keyboardCrushed = crushed;

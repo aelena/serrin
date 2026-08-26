@@ -182,15 +182,10 @@ def cmd_render(args) -> int:
     columns = stream.names
     args.input = source
 
-    if args.seed is not None:
-        seed = args.seed
-    elif kind == "git" and chain.seed_override is None and chain.seed_mode == "auto":
-        # The CSV rule is "hash the first N rows"; the graph equivalent is to
-        # hash the first N commit ids, so the seed still changes when the head
-        # of the data changes and not otherwise.
-        seed = auto_seed_repo(source)
-    else:
-        seed = chain.resolve_seed(source)
+    # Chain.resolve_seed dispatches on the source kind itself: the CSV rule is
+    # "hash the first N rows", and the graph equivalent is the first N commit
+    # ids, so the seed still changes when the head of the data changes.
+    seed = args.seed if args.seed is not None else chain.resolve_seed(source)
 
     if kind == "git":
         print(describe_repo(stream))

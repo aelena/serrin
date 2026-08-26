@@ -58,6 +58,61 @@
       </section>
 
       <section>
+        <h2>source</h2>
+        <p class="micro">
+          render something new. needs <code>scripts/serve.py</code> running —
+          the pedals live in Python, so the file goes to the pipeline and the
+          rendered pair comes back.
+        </p>
+        <label>chain to render it through
+          <select id="ctl-source-preset"></select>
+        </label>
+        <div class="row">
+          <button id="ctl-source-csv">upload a CSV…</button>
+          <input id="ctl-source-file" type="file" accept=".csv,.tsv,text/csv" hidden />
+        </div>
+        <label>…or a git repository path
+          <input id="ctl-source-repo" type="text" placeholder="C:\path\to\repo or ." />
+        </label>
+        <div class="row">
+          <select id="ctl-source-metric">
+            <option value="hash">hash — real noise</option>
+            <option value="interval">interval — the repo's rhythm</option>
+            <option value="churn">churn — size of each change</option>
+            <option value="parents">parents — merges spike</option>
+            <option value="hour">hour — diurnal</option>
+            <option value="author">author</option>
+            <option value="files">files touched</option>
+            <option value="insertions">insertions</option>
+            <option value="deletions">deletions</option>
+          </select>
+          <select id="ctl-source-traversal">
+            <option value="chrono">chronological</option>
+            <option value="topo">topological</option>
+            <option value="reverse">reverse</option>
+          </select>
+          <button id="ctl-source-render">render repo</button>
+        </div>
+        <p class="micro" id="source-readout">—</p>
+      </section>
+
+      <section>
+        <h2>record</h2>
+        <p class="micro">
+          captures what you actually hear, in real time — keyboard playing and a
+          live-drawn envelope included. WebM/Opus, not a lossless master.
+        </p>
+        <div class="row">
+          <button id="ctl-record">record</button>
+          <button id="ctl-record-save" disabled>save take</button>
+          <label class="inline">
+            <input id="ctl-record-video" type="checkbox" /> with video
+          </label>
+        </div>
+        <p class="micro" id="record-readout">—</p>
+      </section>
+
+      <section>
         <h2>session</h2>
         <p class="micro">
           everything you have tuned — tempo, envelope, levels, mutes, keyboard.
