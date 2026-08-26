@@ -184,6 +184,45 @@ the stage. §4.5 wants it out of the piece, and §5.1 wants live drawing on the
 engine's clock; a separate window would satisfy the first and then have to fake
 the second.
 
+## Sessions, and the seam that had to be visible
+
+The temptation was one file that "saves the piece". That would have been a lie,
+because two different things were being saved.
+
+Some settings are *render inputs*: change the chain, the columns, the mapping,
+and the exported JSON is a different file. Others are *runtime state*: master
+level, filter cutoff, mutes, visual toggles, keyboard register. Those have no
+offline meaning at all -- there is no offline for them to have a meaning in.
+
+Pretending the two were one thing would produce the worst failure available:
+loading a session, watching every control move, and hearing something that is
+not what was saved, because the chain half silently did not apply. So the format
+names the halves, `apply()` restores only the runtime one, and a fingerprint
+mismatch produces a warning naming the command that *would* re-render.
+
+Three consequences worth recording:
+
+**The render layer is not a new schema.** It is exactly the preset schema the CLI
+already accepted. That was not obvious at the outset, and inventing a parallel
+"session render format" would have meant two loaders to keep in step forever. It
+also made `--to-preset` nearly free: freezing a session is lifting one block out.
+
+**Tempo legitimately lives in both halves.** It is the only field that is both a
+render input -- it sets the frame rate, and a hertz LFO resolves against it --
+and a live control. It sits in `source`, is applied on load, and folds into a
+frozen preset's `ingest`. A test pins down the surprising half: with a *hertz*
+LFO in the chain, changing the tempo changes the rendered samples; with a
+*beat-locked* one it does not. That is the entire difference between the two
+units, now asserted rather than merely described.
+
+**The cross-language check earns its keep.** Both suites test their own half of
+the format thoroughly, which leaves the seam between them untested -- and a
+format goes wrong exactly there. A field the browser writes as `delay_note` and
+Python reads as `delayNote` fails no unit test and yields a piece that is nearly
+right. `run_all.py` now has the browser write a session through the real
+`capture()`, has Python load it, and asserts the re-render reproduces the saved
+fingerprint.
+
 ## The keyboard, and the first thing that is performed
 
 Everything in serrin up to this point is reproducible from `source + chain +

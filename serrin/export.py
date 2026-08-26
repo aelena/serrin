@@ -366,6 +366,21 @@ def build_piece(
         "source": stream.meta.get("source"),
         "columns": stream.meta.get("columns"),
         "granularity": stream.meta.get("granularity", 1),
+        # Everything ingestion was called with, so a session saved in the
+        # browser can reconstruct the render exactly rather than approximately.
+        "ingest": {
+            key: stream.meta.get(key)
+            for key in (
+                "source",
+                "source_rows",
+                "columns",
+                "column_indices",
+                "granularity",
+                "aggregation",
+                "log_scale",
+                "tempo",
+            )
+        },
         "chain": chain.to_json() if chain is not None else None,
         "chain_applied": stream.meta.get("chain_applied", []),
         "mapping": cfg.to_json(),

@@ -22,6 +22,7 @@ from .envelope import ARCHETYPES, EQUATIONS, Envelope, voice_order
 from .export import MappingConfig, build_piece, write_json
 from .ingest import IngestError, ingest_csv
 from .scales import SCALE_BANK, resolve
+from .session import Session, SessionError, promote_to_preset
 from .stream import MAX_VOICES
 from .tempo import NOTE_FRACTIONS, SUBDIVISIONS, Tempo, TempoError
 
@@ -116,12 +117,31 @@ def _mapping_from_args(args, chain: Chain) -> MappingConfig:
 # render
 # ---------------------------------------------------------------------------
 def cmd_render(args) -> int:
-    chain = _load_chain(args.chain)
-    ingest_opts = dict(chain.ingest)
+    # A session carries both halves -- what was ingested and how it was
+    # transformed -- so it stands in for --input and --chain together. Explicit
+    # flags still win, which is what makes "re-render that session but faster"
+    # a one-flag change rather than an edit.
+    session = Session.load(args.session) if args.session else None
+    if session is not None:
+        chain = session.chain()
+        source = args.input or session.path
+        overrides = session.ingest_kwargs()
+    else:
+        chain = _load_chain(args.chain)
+        source = args.input
+        overrides = {}
+
+    if not source:
+        raise IngestError("nothing to render: pass --input or --session")
+
+    ingest_opts = {**dict(chain.ingest), **overrides}
+    if args.chain and session is not None:
+        # An explicit --chain alongside --session means "that data, this chain".
+        chain = _load_chain(args.chain)
 
     columns = _split_columns(args.columns) or ingest_opts.get("columns")
     stream = ingest_csv(
-        args.input,
+        source,
         columns=columns,
         bit_depth=args.bit_depth or ingest_opts.get("bit_depth", 8),
         granularity=args.granularity or ingest_opts.get("granularity", 1),
@@ -130,14 +150,15 @@ def cmd_render(args) -> int:
         log_scale=args.log_scale or bool(ingest_opts.get("log_scale", False)),
         limit=args.limit,
     )
+    args.input = source
 
-    seed = args.seed if args.seed is not None else chain.resolve_seed(args.input)
+    seed = args.seed if args.seed is not None else chain.resolve_seed(source)
     if args.verbose:
         print(f"ingested {stream.describe()}")
         print(chain.describe())
         print(f"seed {seed}")
 
-    transformed = chain.apply(stream, seed=seed, source=args.input, trace=args.verbose)
+    transformed = chain.apply(stream, seed=seed, source=source, trace=args.verbose)
     envelope = _envelope_from_args(args, chain)
     mapping = _mapping_from_args(args, chain)
 
@@ -180,6 +201,31 @@ def cmd_render(args) -> int:
     print(f"mode        {mode} / loop={loop_policy} / entry={voice_entry}")
     print(f"audio  ->   {out_audio}  ({audio_bytes / 1024:.1f} KiB)")
     print(f"visual ->   {out_visual}  ({visual_bytes / 1024:.1f} KiB)")
+
+    if args.out_session:
+        # The runtime block is carried over from an input session if there was
+        # one: a re-render should not silently discard the author's live
+        # settings just because the pipeline ran again.
+        saved = Session(
+            source={
+                "path": str(source),
+                "columns": columns,
+                "bit_depth": stream.bit_depth,
+                "granularity": stream.meta.get("granularity", 1),
+                "aggregation": stream.meta.get("aggregation"),
+                "log_scale": stream.meta.get("log_scale", False),
+                "limit": args.limit,
+                "tempo": stream.tempo.to_json(),
+            },
+            preset=chain.to_json(),
+            runtime=dict(session.runtime) if session else {},
+            streams={"audio": str(out_audio), "visual": str(out_visual)},
+            label=piece.meta["label"],
+            fingerprint=piece.meta["fingerprint"],
+            saved_at=session.saved_at if session else None,
+        )
+        saved.save(args.out_session)
+        print(f"session ->  {args.out_session}")
     if args.verbose:
         print("\nintensity envelope:")
         print(envelope.ascii())
@@ -262,6 +308,31 @@ def cmd_curve(args) -> int:
     return 0
 
 
+def cmd_session(args) -> int:
+    """Look at a session, or freeze its render layer into a preset."""
+    session = Session.load(args.file)
+    print(session.describe())
+
+    if args.to_preset:
+        preset = promote_to_preset(session, args.name)
+        target = Path(args.to_preset)
+        if target.exists() and not args.force:
+            print(f"\n{target} exists; pass --force to overwrite", file=sys.stderr)
+            return 1
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(preset, indent=2) + "\n", encoding="utf-8")
+        print(f"\npreset ->   {target}")
+        # Said plainly, because it is the one thing about the format that can
+        # surprise: a preset is the half of a session that has an offline
+        # meaning, and the live settings are not it.
+        if session.runtime:
+            print(
+                "note: the runtime block (levels, mutes, visual toggles, keyboard) "
+                "is not part of a preset -- keep the session file for those."
+            )
+    return 0
+
+
 def cmd_preset(args) -> int:
     """Write the built-in example chain out as an editable preset file."""
     chain = default_chain()
@@ -286,7 +357,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     # -- render -------------------------------------------------------------
     render = sub.add_parser("render", help="run the pipeline and export both streams")
-    render.add_argument("--input", "-i", required=True, help="source CSV")
+    render.add_argument("--input", "-i", help="source CSV (or take it from --session)")
+    render.add_argument(
+        "--session", help="re-render a saved session: its source and its chain"
+    )
+    render.add_argument(
+        "--out-session", help="also write a session file describing this render"
+    )
     render.add_argument("--chain", "-c", help="preset JSON (default: built-in gritty_01)")
     render.add_argument("--out-audio", default="out/stream_audio.json")
     render.add_argument("--out-visual", default="out/stream_visual.json")
@@ -367,6 +444,13 @@ def build_parser() -> argparse.ArgumentParser:
     curve.add_argument("--out", help="write the baked curve to JSON")
     curve.set_defaults(func=cmd_curve)
 
+    session = sub.add_parser("session", help="inspect a session, or freeze it as a preset")
+    session.add_argument("file", help="session JSON, as saved from the panel")
+    session.add_argument("--to-preset", help="write the render layer out as a preset")
+    session.add_argument("--name", help="name for the frozen preset")
+    session.add_argument("--force", action="store_true")
+    session.set_defaults(func=cmd_session)
+
     preset = sub.add_parser("preset", help="write the built-in chain out as a preset file")
     preset.add_argument("--out", default="presets/gritty_01.json")
     preset.add_argument("--force", action="store_true")
@@ -380,7 +464,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except (IngestError, TempoError, ValueError, FileNotFoundError) as exc:
+    except (IngestError, SessionError, TempoError, ValueError, FileNotFoundError) as exc:
         print(f"serrin: {exc}", file=sys.stderr)
         return 2
 

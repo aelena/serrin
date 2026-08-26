@@ -22,6 +22,16 @@ import {
   envelopeFromEquation,
 } from './envelope.js';
 import { MODES, REGISTERS, noteName } from './keyboard.js';
+import {
+  apply as applySession,
+  autosave,
+  clearAutosave,
+  downloadPreset,
+  downloadSession,
+  downloadStreams,
+  loadAutosave,
+  readSessionFile,
+} from './session.js';
 import { Tempo } from './tempo.js';
 
 const $ = (id) => document.getElementById(id);
@@ -66,6 +76,7 @@ export class Panel {
     this._paintTempo();
     this._paintKeyboard();
     this._paintEnvelope();
+    this._paintSession();
   }
 
   /** Push the loaded piece's tempo into the controls without firing handlers. */
@@ -81,6 +92,21 @@ export class Panel {
   }
 
   /** Scale, pool size and last note played -- everything the player needs. */
+  /** One line of feedback for the session buttons. Warnings read differently. */
+  _sessionMessage(text, warning = false) {
+    const node = $('session-readout');
+    node.textContent = text;
+    node.style.color = warning ? '#ff9d5c' : '';
+    this._sessionMessageAt = performance.now();
+  }
+
+  _paintSession() {
+    if (this._sessionMessageAt) return; // a real message outranks the summary
+    const meta = this.app.reader.meta ?? {};
+    $('session-readout').textContent =
+      `render ${meta.fingerprint ?? '—'} · seed ${meta.seed ?? '—'}`;
+  }
+
   _paintKeyboard() {
     const keyboard = this.app.keyboard;
     const state = keyboard.enabled ? (keyboard.ready ? 'live' : 'mode not implemented') : 'off';
@@ -134,6 +160,64 @@ export class Panel {
     }
     presetSelect.value = app.presetId ?? app.presets[0]?.id ?? '';
     presetSelect.addEventListener('change', () => app.loadPreset(presetSelect.value));
+
+    // -- session. The one place the render/runtime seam is visible to the
+    // author, so the buttons are named for which half they keep.
+    $('ctl-session-save').addEventListener('click', () => {
+      const session = downloadSession(app, $('ctl-session-notes').value);
+      this._sessionMessage(`saved ${session.label || 'session'}`);
+    });
+
+    $('ctl-session-load').addEventListener('click', () => $('ctl-session-file').click());
+    $('ctl-session-file').addEventListener('change', async (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      try {
+        const report = applySession(app, await readSessionFile(file));
+        this.refresh();
+        this._sessionMessage(
+          [
+            `loaded ${file.name}: ${report.applied.join(', ') || 'nothing'}`,
+            ...report.warnings,
+          ].join(' — '),
+          report.warnings.length > 0,
+        );
+      } catch (error) {
+        this._sessionMessage(String(error.message ?? error), true);
+      } finally {
+        // Cleared so picking the same file twice fires the change event again.
+        event.target.value = '';
+      }
+    });
+
+    $('ctl-session-preset').addEventListener('click', () => {
+      const preset = downloadPreset(app);
+      this._sessionMessage(
+        `froze ${preset.name} — levels, mutes, visuals and keyboard are NOT in a ` +
+          'preset; keep the session for those',
+      );
+    });
+
+    $('ctl-session-streams').addEventListener('click', () => {
+      const label = downloadStreams(app);
+      this._sessionMessage(`downloaded ${label}.audio.json + .visual.json`);
+    });
+
+    $('ctl-session-restore').addEventListener('click', () => {
+      const saved = loadAutosave();
+      if (!saved) {
+        this._sessionMessage('no autosave in this browser', true);
+        return;
+      }
+      const report = applySession(app, saved);
+      this.refresh();
+      this._sessionMessage(`restored autosave: ${report.applied.join(', ')}`);
+    });
+
+    this._check('ctl-session-autosave', (on) => {
+      this.autosaveEnabled = on;
+      if (!on) clearAutosave();
+    });
 
     // -- keyboard. The one part of serrin that is performed rather than
     // generated, so it is off by default: a piece should not change behaviour
@@ -525,6 +609,18 @@ export class Panel {
 
   /** Cheap per-frame refresh of the things that move. Called from the rAF loop. */
   tick() {
+    // Autosave runs whether or not the panel is open: the settings are worth
+    // keeping even when the author is watching the piece rather than the knobs.
+    // Every 20 seconds, because serialising the whole state per frame would be
+    // absurd and localStorage writes are synchronous.
+    if (this.autosaveEnabled !== false) {
+      const now = performance.now();
+      if (!this._lastAutosave || now - this._lastAutosave > 20000) {
+        this._lastAutosave = now;
+        autosave(this.app);
+      }
+    }
+
     if (!this.visible) return;
 
     const levels = this.app.audio.voiceLevels();
@@ -540,6 +636,7 @@ export class Panel {
     }
 
     if (this.app.keyboard.enabled) this._paintKeyboard();
+    this._paintSession();
 
     const counter = this.app.transport.counter;
     $('fact-position').textContent =

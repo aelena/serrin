@@ -58,6 +58,34 @@
       </section>
 
       <section>
+        <h2>session</h2>
+        <p class="micro">
+          everything you have tuned — tempo, envelope, levels, mutes, keyboard.
+          the <em>session</em> keeps all of it; a <em>preset</em> keeps only the
+          half that has an offline meaning and can be re-rendered by the CLI.
+        </p>
+        <label>notes (saved with the session)
+          <input id="ctl-session-notes" type="text" placeholder="what were you going for?" />
+        </label>
+        <div class="row">
+          <button id="ctl-session-save">save session</button>
+          <button id="ctl-session-load">load session…</button>
+          <input id="ctl-session-file" type="file" accept=".json,application/json" hidden />
+        </div>
+        <div class="row">
+          <button id="ctl-session-preset">freeze as preset</button>
+          <button id="ctl-session-streams">download streams</button>
+        </div>
+        <div class="row">
+          <label class="inline">
+            <input id="ctl-session-autosave" type="checkbox" checked /> autosave in this browser
+          </label>
+          <button id="ctl-session-restore">restore autosave</button>
+        </div>
+        <p class="micro" id="session-readout">—</p>
+      </section>
+
+      <section>
         <h2>keyboard</h2>
         <label class="inline">
           <input id="ctl-keyboard" type="checkbox" /> use keyboard

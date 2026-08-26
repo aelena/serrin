@@ -71,6 +71,8 @@ One entry point, five subcommands:
 
 ```bash
 python -m serrin render   -i data.csv -c presets/gritty_01.json   # the main event
+python -m serrin render   --session out/my.session.json           # re-render what you saved
+python -m serrin session  out/my.session.json --to-preset p.json  # freeze it as a preset
 python -m serrin inspect  -i data.csv                             # look before rendering
 python -m serrin catalog                                          # pedals + parameters
 python -m serrin scales                                           # the scale bank
@@ -189,6 +191,42 @@ dominant, whole tone, diminished, chromatic. `mod_reduce` maps values onto scale
 *degrees* rather than semitones mod 12 — unfiltered chromaticism tires quickly,
 so `pentatonic_minor` is the default and full chromaticism is a deliberate
 choice.
+
+### Sessions: keeping what you found
+
+The panel used to be a place to discover settings you could not keep. **save
+session** writes everything you have tuned to a file that both sides understand.
+
+The format has one seam, and it is the whole design:
+
+| block | what it holds | applying it |
+|---|---|---|
+| `source` | what was ingested and how | needs a re-render |
+| `preset` | chain, seed policy, mapping, envelope - *exactly* the preset schema | needs a re-render |
+| `runtime` | levels, cutoff, mutes, visual toggles, keyboard, speed, drawn envelope | takes effect at once |
+
+Loading a session in the browser restores what you were **hearing**;
+re-rendering from it restores what the **pipeline** would produce. When the
+loaded streams come from a different render, the panel says so and names the
+command that would fix it, rather than pretending a chain edit took hold.
+
+```bash
+python -m serrin render --session out/my.session.json      # reproduces it exactly
+python -m serrin session out/my.session.json               # look at one
+python -m serrin session out/my.session.json --to-preset presets/mine.json
+```
+
+**freeze as preset** is the useful direction of travel: tune by ear, then lock
+the result as a CLI preset - section 3.4's "freeze the chains that work". A
+preset is the half of a session with an offline meaning, so levels, mutes,
+visuals and keyboard are *not* in it. Both the panel and the CLI say so out loud.
+
+**download streams** gives you the rendered JSON pair. Pair plus session is a
+complete, portable, replayable piece. Audio you can send to someone who does not
+have serrin is a separate feature, still to come.
+
+Sessions also autosave into the browser every 20 seconds (per-origin
+`localStorage`), so a reload does not cost the settings.
 
 ### The keyboard
 
@@ -312,6 +350,7 @@ No framework, no bundler. ES modules straight from `web/js/`.
 | `visual.js` | banding, ASCII waterfall, bars, block displacement, scan |
 | `envelope.js` | intensity curves, stroke capture, voice gating |
 | `keyboard.js` | live playing: modes, note pool, which keys it claims |
+| `session.js` | capture/restore, downloads, autosave |
 | `panel.js` | the author panel |
 | `main.js` | wiring, URL params, keyboard |
 
@@ -376,7 +415,7 @@ invert · <kbd>f</kbd> fullscreen · <kbd>1</kbd>–<kbd>8</kbd> mute a voice.
 python tests/run_all.py          # both suites, and they cross-check each other
 ```
 
-116 Python tests, 55 Node tests. Weighted toward the two properties the aesthetic
+135 Python tests, 70 Node tests, plus a cross-language round trip. Weighted toward the two properties the aesthetic
 depends on: **determinism** (a promise that is not tested is a wish) and
 **invariants** (a pedal that breaks one fails hundreds of frames later, in the
 browser, which is a miserable way to find out).
@@ -393,12 +432,14 @@ the pipeline rendered.
 
 ```
 serrin/           the pipeline: rng, scales, tempo, ingest, pedals, chain,
-                  envelope, export, cli
+                  envelope, export, session, cli
 presets/          chain definitions
 scripts/          sample data generator, dev server
 web/              the runtime (index.html, style.css, js/)
-tests/            run_all.py, test_pipeline.py, test_tempo_lfsr.py,
-                  test_scale_export.py, test_runtime.mjs, test_keyboard.mjs
+tests/            run_all.py + test_pipeline, test_tempo_lfsr,
+                  test_scale_export, test_session (python) and
+                  test_runtime, test_keyboard, test_session (node),
+                  session_fixture.mjs
 data/  out/       inputs and renders (out/ is gitignored)
 ```
 

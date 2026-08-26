@@ -102,9 +102,96 @@ def js_suite() -> bool:
     return ok
 
 
+def cross_language_check() -> bool:
+    """The seam: the browser writes a session, Python re-renders from it.
+
+    Each suite tests its own half of the format thoroughly, which leaves the
+    boundary between them untested -- and a format goes wrong precisely there.
+    A field the browser writes under one name and Python reads under another
+    fails no unit test and produces a piece that is nearly, but not quite, the
+    one that was saved.
+    """
+    banner("cross-language session round trip")
+
+    if shutil.which("node") is None:
+        print("node not found on PATH -- skipping", flush=True)
+        return True
+    if not (ROOT / "out" / "stream_audio.json").exists():
+        print("no render in out/ -- skipping", flush=True)
+        return True
+
+    from serrin.ingest import fingerprint, ingest_csv  # noqa: PLC0415
+    from serrin.session import Session  # noqa: PLC0415
+
+    target = ROOT / "out" / "roundtrip.session.json"
+    emit = subprocess.run(
+        ["node", str(ROOT / "tests" / "session_fixture.mjs"), str(ROOT), str(target)],
+        cwd=str(ROOT),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if emit.returncode != 0:
+        print("the fixture failed to write:", flush=True)
+        print(emit.stderr, flush=True)
+        return False
+
+    try:
+        session = Session.load(target)
+    except Exception as exc:  # noqa: BLE001 -- the point is to report anything
+        print(f"python could not read the browser's session: {exc}", flush=True)
+        return False
+
+    checks: list[tuple[str, bool, str]] = []
+
+    grid = session.tempo()
+    checks.append(
+        ("the tempo set by ear survived", grid is not None and abs(grid.bpm - 104) < 1e-9, f"{grid}")
+    )
+    checks.append(("swing survived", grid is not None and abs(grid.swing - 0.22) < 1e-9, f"{grid}"))
+    checks.append(("the chain loads", bool(session.chain().slots), session.preset.get("name", "")))
+    checks.append(
+        (
+            "the hand-drawn envelope survived",
+            len((session.preset.get("envelope") or {}).get("points") or []) > 8,
+            "envelope points",
+        )
+    )
+    checks.append(
+        (
+            "the runtime block came through whole",
+            {"audio", "visual", "keyboard", "transport", "voices", "envelope"}
+            <= set(session.runtime),
+            f"{sorted(session.runtime)}",
+        )
+    )
+
+    # And the property the format exists for.
+    source = ROOT / session.path
+    if not source.exists():
+        source = Path(session.path)
+    if source.exists():
+        stream = ingest_csv(source, **session.ingest_kwargs())
+        rendered = fingerprint(session.chain().apply(stream, source=source))
+        checks.append(
+            (
+                "re-rendering reproduces the saved fingerprint",
+                rendered == session.fingerprint,
+                f"{rendered} vs {session.fingerprint}",
+            )
+        )
+
+    ok = True
+    for name, result, detail in checks:
+        print(f"  {'ok  ' if result else 'FAIL'} {name}" + ("" if result else f"  [{detail}]"), flush=True)
+        ok = ok and result
+    return ok
+
+
 def main() -> int:
     ok = python_suite()
     ok = js_suite() and ok
+    ok = cross_language_check() and ok
     print()
     print("all suites passed" if ok else "FAILURES -- see above", flush=True)
     return 0 if ok else 1
