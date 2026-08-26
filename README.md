@@ -42,6 +42,29 @@ ES modules and `fetch` both refuse `file://`. Hence the tiny server.
 
 ---
 
+### Running more than one at a time
+
+Each browser tab is an independent instance: its own `AudioContext`, its own
+transport, its own clock. Nothing is exclusive at the audio-device level — the OS
+mixes them — so several pieces can play at once and you do not need a second
+server to do it. Just open more tabs.
+
+Separate ports are only useful for serving a *different working copy*:
+
+```bash
+python scripts/serve.py --port 8000
+python scripts/serve.py --port 8010 --no-open
+```
+
+Two things to know about long runs:
+
+- A hidden tab keeps making sound but stops drawing — browsers suspend
+  `requestAnimationFrame` while leaving the audio clock running. The transport
+  caps its pending-visual queue and drops the oldest frames, so a piece left
+  behind another window does not accumulate a backlog.
+- The dev server is threaded. It began as a single-threaded one, which stalls
+  every other request while a browser holds a connection open.
+
 ## The pipeline (Python)
 
 One entry point, five subcommands:
@@ -167,6 +190,50 @@ dominant, whole tone, diminished, chromatic. `mod_reduce` maps values onto scale
 so `pentatonic_minor` is the default and full chromaticism is a deliberate
 choice.
 
+### The keyboard
+
+Playing along with the piece, live. Off by default — a piece must not change
+behaviour because someone leaned on the space bar.
+
+Turn on **use keyboard** in the panel, and letter/number keys play notes. The
+piece keeps only <kbd>space</kbd> (play/pause) and <kbd>esc</kbd> (switch the
+keyboard off); modifier combinations pass through to the browser.
+
+Modes arrive in stages. Only the first exists:
+
+| mode | what it does |
+|---|---|
+| `random` | any key draws a note from the piece's own scale — **implemented** |
+| `notes` | key → fixed note, for playing actual melodies — pending |
+| `samples` | key → sample — pending, needs a map editor |
+| `beats` | step sequencing and live recording over the stream — pending |
+
+The pending modes are listed in the dropdown and disabled, so the shape is
+visible and nothing pretends to work.
+
+**Which notes.** The pipeline now exports the key the piece is in
+(`meta.scale`), so the keyboard plays *inside* it rather than over the top of
+it. A piece can pick up a scale in two unrelated places — `mod_reduce` in the
+chain, or `MappingConfig.quantize_to` on the way out — and the output mapping
+wins when both are set, because it is what the exported frequencies actually
+obey. A piece that quantizes nothing (`corrupted_dump`) reports the default and
+says so, rather than silently pretending it declared a key.
+
+**Register** picks where the notes sit — bass, mid, treble, the whole piano, or
+the piece's own working range — always clamped to A0–C8.
+
+**Routing.** Played notes go *after* the bitcrusher by default, which is the one
+place serrin deliberately breaks its own "everything gets the same dirt" rule:
+the intensity envelope drops the crusher to three bits at the climax, exactly
+when a melody most needs to be audible. They still get the filter and the
+tempo-synced delay, so they stay in the same room. There is a checkbox to crush
+them anyway.
+
+**Reproducibility.** The random draw is seed-derived, so the *n*th press of a
+given piece is always the same note. The performance is not reproducible; the
+instrument is. That is what will let a recorded key sequence replay exactly when
+the beats mode arrives.
+
 ### Chains and presets
 
 A chain is an ordered list of `(pedal, params)` plus a seed policy:
@@ -244,6 +311,7 @@ No framework, no bundler. ES modules straight from `web/js/`.
 | `audio.js` | oscillators, filter, delay, bitcrush |
 | `visual.js` | banding, ASCII waterfall, bars, block displacement, scan |
 | `envelope.js` | intensity curves, stroke capture, voice gating |
+| `keyboard.js` | live playing: modes, note pool, which keys it claims |
 | `panel.js` | the author panel |
 | `main.js` | wiring, URL params, keyboard |
 
@@ -308,7 +376,7 @@ invert · <kbd>f</kbd> fullscreen · <kbd>1</kbd>–<kbd>8</kbd> mute a voice.
 python tests/run_all.py          # both suites, and they cross-check each other
 ```
 
-107 Python tests, 30 Node tests. Weighted toward the two properties the aesthetic
+116 Python tests, 55 Node tests. Weighted toward the two properties the aesthetic
 depends on: **determinism** (a promise that is not tested is a wish) and
 **invariants** (a pedal that breaks one fails hundreds of frames later, in the
 browser, which is a miserable way to find out).
@@ -329,7 +397,8 @@ serrin/           the pipeline: rng, scales, tempo, ingest, pedals, chain,
 presets/          chain definitions
 scripts/          sample data generator, dev server
 web/              the runtime (index.html, style.css, js/)
-tests/            run_all.py, test_pipeline.py, test_tempo_lfsr.py, test_runtime.mjs
+tests/            run_all.py, test_pipeline.py, test_tempo_lfsr.py,
+                  test_scale_export.py, test_runtime.mjs, test_keyboard.mjs
 data/  out/       inputs and renders (out/ is gitignored)
 ```
 

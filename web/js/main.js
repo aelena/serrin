@@ -14,6 +14,7 @@
  */
 
 import { AudioEngine } from './audio.js';
+import { KeyboardEngine } from './keyboard.js';
 import { Envelope, ReactiveIntensity, voiceGates } from './envelope.js';
 import { loadStreams } from './reader.js';
 import { Transport } from './transport.js';
@@ -68,6 +69,7 @@ const app = {
   gates: null,
   entryStrategy: 'variance',
   entryOrder: [],
+  keyboard: null,
 
   /** Replace the intensity curve. Stroke, equation or archetype -- same call. */
   setEnvelope(envelope) {
@@ -157,6 +159,16 @@ function adopt(reader) {
 
   app.audio = new AudioEngine(reader);
   app.visual = new VisualEngine(stage, reader);
+  if (app.keyboard) {
+    // Kept across a preset switch: it holds the player's settings, and the new
+    // piece only changes which scale it draws from.
+    app.keyboard.audio = app.audio;
+    app.keyboard.adopt(reader);
+  } else {
+    app.keyboard = new KeyboardEngine(app.audio, reader);
+  }
+  app.keyboard.onNote = (played) => app.visual.flashKey(played);
+  app.visual.showKeys = app.keyboard.showKeys;
   app.envelope = Envelope.fromExport(reader.audio.envelope);
   app.reactive = new ReactiveIntensity(reader.seed);
   app.setEntryStrategy(reader.meta.voice_entry_strategy ?? 'variance');
@@ -164,6 +176,7 @@ function adopt(reader) {
   app.transport = new Transport(reader, app.audio, app.visual, {
     intensityAt,
     gatesFor: () => app.gates,
+    keyboardArmed: () => app.keyboard?.enabled === true,
     onEnd: () => {
       document.getElementById('ctl-play').textContent = 'play';
     },
@@ -216,6 +229,22 @@ async function boot() {
 window.addEventListener('keydown', async (event) => {
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
 
+  // The keyboard gets first refusal on everything except the keys the piece
+  // reserves (see RESERVED in keyboard.js), so playing does not trip shortcuts.
+  if (app.keyboard?.claims(event)) {
+    event.preventDefault();
+    app.keyboard.press(event);
+    return;
+  }
+
+  if (event.key === 'Escape' && app.keyboard?.enabled) {
+    app.keyboard.enabled = false;
+    app.keyboard.panic();
+    const box = document.getElementById('ctl-keyboard');
+    if (box) box.checked = false;
+    return;
+  }
+
   switch (event.key) {
     case ' ':
       event.preventDefault();
@@ -246,6 +275,10 @@ window.addEventListener('keydown', async (event) => {
         if (index < app.reader.voiceCount) app.audio.toggleMute(index);
       }
   }
+});
+
+window.addEventListener('keyup', (event) => {
+  app.keyboard?.release(event);
 });
 
 boot();

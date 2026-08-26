@@ -184,6 +184,68 @@ the stage. §4.5 wants it out of the piece, and §5.1 wants live drawing on the
 engine's clock; a separate window would satisfy the first and then have to fake
 the second.
 
+## The keyboard, and the first thing that is performed
+
+Everything in serrin up to this point is reproducible from `source + chain +
+seed`. A person hitting keys is not, so the keyboard is the first feature that
+sits outside the project's central promise.
+
+The compromise is the same one the live envelope stroke takes: the randomness is
+seed-derived, so a given *sequence of presses* always produces the same notes.
+The performance is not reproducible; the instrument is. That is also the
+groundwork for the beats mode — a recorded key sequence can replay exactly.
+
+Three decisions worth recording:
+
+**The piece had to start declaring its key.** A piece can acquire a scale in two
+unrelated places — `mod_reduce` inside the chain, or `MappingConfig.quantize_to`
+on the way out — and neither was exported. `mod_reduce` wrote its scale into
+`stream.meta` and nothing ever read it. The output mapping wins when both are
+set, because it is what the exported frequencies actually obey. There is a test
+asserting every exported pitch really is in the declared scale, which is the
+property the keyboard depends on.
+
+A piece may legitimately declare nothing — full chromaticism is a deliberate
+option and `corrupted_dump` takes it. That case reports the documented default
+*and says so in `source`*, so the panel can be honest rather than inventing a
+key the piece never had.
+
+**Played notes bypass the bitcrusher.** The one deliberate exception to
+"everything gets the same dirt". The intensity envelope drops the crusher to
+three bits at the climax, which is exactly when a hand-played melody most needs
+to be heard; crushing it would defeat the point of playing along. It still gets
+the filter and the tempo-synced delay, so it is in the same room rather than
+pasted on top. There is a checkbox for authors who disagree.
+
+**A node per note, unlike the data voices — for the opposite reason.** Data
+voices are eight continuous streams, so persistent oscillators avoid constant
+allocation. Played notes are short, sparse and polyphonic, so spawning one per
+press is both simpler and correct. Ten fingers cannot out-allocate a garbage
+collector.
+
+The modes are a registry with one entry implemented and three declared inert.
+They appear in the dropdown, disabled. Listing them makes the shape visible and
+gives the next commit an obvious place to land; disabling them means nothing
+pretends.
+
+## Two bugs found by running it for real
+
+**The dev server was single-threaded.** It began as `socketserver.TCPServer`,
+which serves one request at a time. That is invisible until a browser is
+actually attached — then any second request stalls behind the connection the
+page is holding, and a `curl` against it hangs forever. Now
+`ThreadingHTTPServer`. Worth stating because it only showed up once someone was
+using the thing, not in any test.
+
+**A hidden tab accumulated an unbounded visual backlog.** The transport hands
+frames to the visual loop through a queue, drained on `requestAnimationFrame`.
+Browsers suspend rAF on a hidden tab while the `AudioContext` clock keeps
+running, so the scheduler kept filling a queue nobody was draining — a slow leak
+in exactly the installation scenario the piece is meant for. Capped now, dropping
+the *oldest* frames: sound is authoritative and pictures are transient, so on
+returning to the tab you want the present, not a fast-forward through the
+backlog.
+
 ## Where the aesthetic knobs live
 
 Everything subjective is in one place: `MappingConfig` in `serrin/export.py`.

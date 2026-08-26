@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import functools
 import http.server
-import socketserver
 import webbrowser
 from pathlib import Path
 
@@ -25,6 +24,10 @@ ROOT = Path(__file__).resolve().parent.parent
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     """Static files, no caching -- a re-render should show up on reload."""
+
+    # HTTP/1.1 so the browser can keep connections alive; safe only because the
+    # server below is threaded.
+    protocol_version = "HTTP/1.1"
 
     def end_headers(self):
         self.send_header("Cache-Control", "no-store, max-age=0")
@@ -55,8 +58,14 @@ def main() -> int:
     url = f"http://localhost:{args.port}/web/" + (f"?{'&'.join(query)}" if query else "")
 
     handler = functools.partial(Handler, directory=str(ROOT))
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("", args.port), handler) as httpd:
+    # Threaded, not the single-threaded TCPServer this started as. A browser
+    # holding one connection open -- which is normal, and which the page itself
+    # does while fetching two stream files -- blocks every other request on a
+    # serial server, so the page would half-load and any second client would
+    # hang outright.
+    http.server.ThreadingHTTPServer.allow_reuse_address = True
+    http.server.ThreadingHTTPServer.daemon_threads = True
+    with http.server.ThreadingHTTPServer(("", args.port), handler) as httpd:
         print(f"serrin -- serving {ROOT}")
         print(f"  {url}")
         print("  ctrl-c to stop")

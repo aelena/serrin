@@ -85,13 +85,21 @@ def js_suite() -> bool:
         "SERRIN_PY_NOTES": json.dumps(NOTE_FRACTIONS),
     }
 
-    completed = subprocess.run(
-        ["node", str(ROOT / "tests" / "test_runtime.mjs")],
-        cwd=str(ROOT),
-        env=env,
-        check=False,
-    )
-    return completed.returncode == 0
+    # Every .mjs in tests/ is a suite. Discovered rather than listed so a new
+    # one cannot be added and then quietly never run.
+    suites = sorted((ROOT / "tests").glob("test_*.mjs"))
+    if not suites:
+        print("no node suites found", flush=True)
+        return True
+
+    ok = True
+    for suite in suites:
+        print(f"\n-- {suite.name}", flush=True)
+        completed = subprocess.run(
+            ["node", str(suite)], cwd=str(ROOT), env=env, check=False
+        )
+        ok = completed.returncode == 0 and ok
+    return ok
 
 
 def main() -> int:

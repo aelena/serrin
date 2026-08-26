@@ -23,6 +23,11 @@
 
 const WAVEFORMS = ['sawtooth', 'square', 'triangle', 'sine'];
 
+/** A4 = MIDI 69 = 440 Hz. Same convention as serrin/scales.py. */
+export function midiToHz(midi) {
+  return 440 * 2 ** ((midi - 69) / 12);
+}
+
 /** Quantizing transfer curve: the 8->4->2 bit staircase, as a WaveShaper. */
 function crushCurve(bits, length = 4096) {
   const steps = 2 ** Math.max(1, Math.min(16, bits));
@@ -120,6 +125,8 @@ export class AudioEngine {
     this.delayMix = 0.22;
     this.filterCutoff = 9000;
     this.delayNote = reader.meta.delay_note ?? '1/8.';
+    // Played notes bypass the crusher by default -- see the routing in start().
+    this.keyboardCrushed = false;
     this.soloVoice = null;
     this.mutes = new Set();
     // "Audio-vs-visual mapping balance" (4.5): audio's share of the weight.
@@ -158,7 +165,7 @@ export class AudioEngine {
     this.delaySend = ctx.createGain();
     this.delaySend.gain.value = this.delayMix;
 
-    this.bus = ctx.createGain(); // where voices land
+    this.bus = ctx.createGain(); // where the data voices land
 
     this.bus.connect(this.crusher);
     this.crusher.connect(this.tone);
@@ -169,6 +176,27 @@ export class AudioEngine {
     this.feedback.connect(this.delay); // the feedback loop
     this.delay.connect(this.master);
     this.master.connect(ctx.destination);
+
+    // -- the keyboard's own path ------------------------------------------
+    //
+    // Played notes default to *after* the crusher, which is the one place this
+    // deliberately breaks the project's "everything gets the same dirt" rule.
+    // The point of playing along is to sit over the noise, and the intensity
+    // envelope drops the crusher to three bits at the climax -- exactly when a
+    // melody most needs to be audible. It still gets the filter and the
+    // tempo-synced delay, so it stays in the same room.
+    //
+    // Both paths are wired permanently and switched by gain rather than by
+    // re-patching: toggling a connection mid-note clicks, a gain ramp does not.
+    this.keyboardBus = ctx.createGain();
+    this.keyboardBus.gain.value = 1;
+    this.keyClean = ctx.createGain();
+    this.keyCrushed = ctx.createGain();
+    this.keyClean.gain.value = this.keyboardCrushed ? 0 : 1;
+    this.keyCrushed.gain.value = this.keyboardCrushed ? 1 : 0;
+
+    this.keyboardBus.connect(this.keyClean).connect(this.tone);
+    this.keyboardBus.connect(this.keyCrushed).connect(this.bus);
 
     const audioVoices = this.reader.audio.voices ?? [];
     this.voices = audioVoices.map(
@@ -225,6 +253,64 @@ export class AudioEngine {
       const implied = Math.round(8 - intensity * 4.2);
       this.setCrush(Math.max(3, implied), false);
     }
+  }
+
+  /**
+   * Play one note, now. The keyboard's entry point.
+   *
+   * A node per note here, unlike the data voices -- and for the opposite
+   * reason. Data voices are eight continuous streams, so persistent oscillators
+   * avoid constant allocation; played notes are short, sparse and polyphonic,
+   * so spawning one per press is both simpler and correct. Ten fingers cannot
+   * out-allocate a garbage collector.
+   *
+   * @param {number} midi      MIDI note number
+   * @param {number} velocity  0..1
+   * @param {object} options   {waveform, attack, decay, when}
+   */
+  playNote(midi, velocity = 0.7, options = {}) {
+    if (!this.started) return null;
+    const ctx = this.ctx;
+    const when = options.when ?? ctx.currentTime + 0.004;
+    const attack = options.attack ?? 0.003;
+    const decay = options.decay ?? 0.22;
+    const freq = midiToHz(midi);
+
+    const osc = ctx.createOscillator();
+    osc.type = options.waveform ?? 'square';
+    osc.frequency.value = Math.max(18, Math.min(ctx.sampleRate / 2.2, freq));
+
+    const gain = ctx.createGain();
+    gain.gain.value = 0;
+    gain.gain.setValueAtTime(0, when);
+    gain.gain.linearRampToValueAtTime(Math.max(0, Math.min(1, velocity)), when + attack);
+    // Exponential-ish tail via setTargetAtTime, then a hard zero so the node can
+    // actually be stopped -- setTargetAtTime never truly reaches its target.
+    gain.gain.setTargetAtTime(0.0001, when + attack, decay * 0.4);
+    const end = when + attack + decay + 0.05;
+    gain.gain.linearRampToValueAtTime(0, end);
+
+    osc.connect(gain).connect(this.keyboardBus);
+    osc.start(when);
+    osc.stop(end);
+    osc.onended = () => {
+      try {
+        gain.disconnect();
+        osc.disconnect();
+      } catch {
+        // Already torn down -- a context close races with the last few notes.
+      }
+    };
+    return { midi, freq, when, end };
+  }
+
+  /** Route played notes through the bitcrusher, or around it. */
+  setKeyboardCrushed(crushed) {
+    this.keyboardCrushed = crushed;
+    if (!this.keyClean) return;
+    const now = this.currentTime;
+    this.keyClean.gain.setTargetAtTime(crushed ? 0 : 1, now, 0.02);
+    this.keyCrushed.gain.setTargetAtTime(crushed ? 1 : 0, now, 0.02);
   }
 
   /** Panic: kill every voice, e.g. on pause. */

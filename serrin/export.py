@@ -29,7 +29,7 @@ from pathlib import Path
 
 from .envelope import Envelope, voice_order
 from .ingest import fingerprint
-from .scales import midi_to_hz, quantize_semitone, resolve
+from .scales import DEFAULT_SCALE, midi_to_hz, quantize_semitone, resolve
 from .stream import Stream
 
 #: ASCII vocabulary for the visual side, ordered light -> heavy. Byte value maps
@@ -261,6 +261,50 @@ def to_visual(stream: Stream, config: MappingConfig | None = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# what key is this piece in?
+# ---------------------------------------------------------------------------
+def effective_scale(stream: Stream, config: MappingConfig | None = None) -> dict:
+    """The scale the piece is actually in, resolved to semitone offsets.
+
+    Needed because a piece can acquire its scale in two unrelated places and
+    the browser cannot guess which: ``mod_reduce`` may have quantized the data
+    to scale *degrees* inside the pedal chain, and ``MappingConfig.quantize_to``
+    may snap pitches again on the way out. The output mapping wins when both are
+    set, because it is what the exported frequencies actually obey.
+
+    A piece may legitimately have no scale at all -- ``corrupted_dump`` does not
+    quantize anything, and full chromaticism is a deliberate option. But
+    something playing *along* with the piece still needs notes to choose from, so
+    that case reports the documented default and says so in ``source``. The
+    caller can then be honest about it rather than silently pretending the piece
+    declared a key.
+
+    ``root`` is a MIDI note, not a pitch class: the offsets in the audio fork are
+    measured from ``note_low``, so that is where the scale is rooted.
+    """
+    cfg = config or MappingConfig()
+
+    if cfg.quantize_to:
+        name, source = cfg.quantize_to, "mapping"
+    elif stream.meta.get("quantized_scale"):
+        name, source = stream.meta["quantized_scale"]["scale"], "mod_reduce"
+    else:
+        name, source = DEFAULT_SCALE, "default"
+
+    offsets, span = resolve(name)
+    return {
+        "name": name if isinstance(name, str) else "custom",
+        "offsets": offsets,
+        "span": span,
+        "root": cfg.note_low,
+        "source": source,
+        # Handy for anything playing along: the piece's own working register.
+        "note_low": cfg.note_low,
+        "note_high": cfg.note_high,
+    }
+
+
+# ---------------------------------------------------------------------------
 # packaging
 # ---------------------------------------------------------------------------
 @dataclass
@@ -325,6 +369,8 @@ def build_piece(
         "chain": chain.to_json() if chain is not None else None,
         "chain_applied": stream.meta.get("chain_applied", []),
         "mapping": cfg.to_json(),
+        # The key the piece is in, so anything playing along can stay in it.
+        "scale": effective_scale(stream, cfg),
     }
     return Piece(
         meta=meta,

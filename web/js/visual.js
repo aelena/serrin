@@ -42,6 +42,12 @@ export class VisualEngine {
     this.invert = false;
     this.hidden = new Set();
 
+    // Played notes, for the optional on-stage readout. Off by default: section
+    // 4.4 insists the grit comes from the data, and a keypress is not data --
+    // it is the author's hand, which the piece should not show unless asked.
+    this.showKeys = false;
+    this.keyFlashes = [];
+
     this.glyphs = reader.glyphs ?? ' .:-=+*#%@';
     this.cell = 12;
     this.frameCount = 0;
@@ -110,6 +116,7 @@ export class VisualEngine {
     if (this.showBars) this._drawBars(ctx, w, h, latest, weight);
     if (this.corruption > 0) this._drawCorruption(ctx, w, h, latest, intensity);
     this._drawScan(ctx, w, h, now, transport, intensity);
+    if (this.showKeys) this._drawKeys(ctx, w, h, now);
   }
 
   // -- layer 1: banding from flatness ------------------------------------
@@ -245,6 +252,7 @@ export class VisualEngine {
       `int ${intensity.toFixed(2)}`,
     ];
     if (transport?.pass > 0) bits.push(`pass ${transport.pass}`);
+    if (transport?.keyboard) bits.push('KBD');
     ctx.fillText(bits.join('   '), 8, 8);
   }
 
@@ -255,6 +263,34 @@ export class VisualEngine {
     ctx.textBaseline = 'middle';
     ctx.fillStyle = `rgba(${ink},${ink},${ink},0.35)`;
     ctx.fillText('press space to begin  ·  p for the panel', w / 2, h / 2);
+  }
+
+  /** Record a played note for the on-stage readout. Cheap when switched off. */
+  flashKey(played) {
+    if (!this.showKeys) return;
+    this.keyFlashes.push({ ...played, at: performance.now() });
+    if (this.keyFlashes.length > 12) this.keyFlashes.shift();
+  }
+
+  _drawKeys(ctx, w, h, now) {
+    const life = 900; // ms
+    this.keyFlashes = this.keyFlashes.filter((flash) => now - flash.at < life);
+    if (!this.keyFlashes.length) return;
+
+    const ink = this.invert ? 0 : 255;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    this.keyFlashes.forEach((flash, index) => {
+      const age = (now - flash.at) / life;
+      const alpha = (1 - age) ** 1.5;
+      const size = 20 + (1 - age) * 16;
+      ctx.font = `${size.toFixed(1)}px ${MONO}`;
+      ctx.fillStyle = `rgba(${ink},${ink},${ink},${(alpha * 0.8).toFixed(3)})`;
+      // Newest on the right, drifting up as it fades: legible while playing
+      // without becoming a second visualisation competing with the data.
+      const x = w * 0.5 + (index - this.keyFlashes.length + 1) * size * 2.2;
+      ctx.fillText(flash.name, x, h * 0.82 - age * 26);
+    });
   }
 
   toggleVoice(index) {

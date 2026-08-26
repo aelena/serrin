@@ -21,6 +21,7 @@ import {
   envelopeFromArchetype,
   envelopeFromEquation,
 } from './envelope.js';
+import { MODES, REGISTERS, noteName } from './keyboard.js';
 import { Tempo } from './tempo.js';
 
 const $ = (id) => document.getElementById(id);
@@ -63,6 +64,7 @@ export class Panel {
     this._paintVoices();
     this._paintPedals();
     this._paintTempo();
+    this._paintKeyboard();
     this._paintEnvelope();
   }
 
@@ -76,6 +78,17 @@ export class Panel {
     $('ctl-subdivision').value = String(tempo.subdivision);
     $('ctl-beats-per-bar').value = String(tempo.beatsPerBar);
     $('ctl-delay-note').value = this.app.audio.delayNote;
+  }
+
+  /** Scale, pool size and last note played -- everything the player needs. */
+  _paintKeyboard() {
+    const keyboard = this.app.keyboard;
+    const state = keyboard.enabled ? (keyboard.ready ? 'live' : 'mode not implemented') : 'off';
+    const last = keyboard.lastNote === null ? '—' : noteName(keyboard.lastNote);
+    $('keyboard-readout').textContent =
+      `${state} · ${keyboard.describe()} · last ${last}`;
+    $('ctl-keyboard-mode').value = keyboard.mode;
+    $('ctl-keyboard-register').value = keyboard.register;
   }
 
   _paintTempo() {
@@ -121,6 +134,58 @@ export class Panel {
     }
     presetSelect.value = app.presetId ?? app.presets[0]?.id ?? '';
     presetSelect.addEventListener('change', () => app.loadPreset(presetSelect.value));
+
+    // -- keyboard. The one part of serrin that is performed rather than
+    // generated, so it is off by default: a piece should not change behaviour
+    // because someone leaned on the space bar.
+    const modeSelect = $('ctl-keyboard-mode');
+    modeSelect.replaceChildren();
+    for (const [id, mode] of Object.entries(MODES)) {
+      const option = document.createElement('option');
+      option.value = id;
+      option.textContent = mode.label;
+      // The planned modes are listed so the shape is visible, and disabled so
+      // nothing pretends to work.
+      option.disabled = !mode.ready;
+      modeSelect.append(option);
+    }
+    modeSelect.value = app.keyboard.mode;
+    modeSelect.addEventListener('change', (e) => {
+      app.keyboard.setMode(e.target.value);
+      this._paintKeyboard();
+    });
+
+    const registerSelect = $('ctl-keyboard-register');
+    registerSelect.replaceChildren();
+    for (const [id, register] of Object.entries(REGISTERS)) {
+      const option = document.createElement('option');
+      option.value = id;
+      option.textContent = register.label;
+      registerSelect.append(option);
+    }
+    registerSelect.value = app.keyboard.register;
+    registerSelect.addEventListener('change', (e) => {
+      app.keyboard.setRegister(e.target.value);
+      this._paintKeyboard();
+    });
+
+    this._check('ctl-keyboard', (on) => {
+      app.keyboard.enabled = on;
+      if (!on) app.keyboard.panic();
+      this._paintKeyboard();
+    });
+    this._range('ctl-keyboard-level', 'out-keyboard-level', (v) => {
+      app.keyboard.level = v;
+      return v.toFixed(2);
+    });
+    $('ctl-keyboard-wave').addEventListener('change', (e) => {
+      app.keyboard.waveform = e.target.value;
+    });
+    this._check('ctl-keyboard-crush', (on) => app.audio.setKeyboardCrushed(on));
+    this._check('ctl-keyboard-show', (on) => {
+      app.keyboard.showKeys = on;
+      app.visual.showKeys = on;
+    });
 
     // -- tempo. Every control here goes through app.setTempo, which re-anchors
     // the transport; changing the grid without that makes the scheduler either
@@ -473,6 +538,8 @@ export class Panel {
     for (const entry of this.pedalRows ?? []) {
       entry.row.classList.toggle('on', this.app.intensity >= entry.threshold);
     }
+
+    if (this.app.keyboard.enabled) this._paintKeyboard();
 
     const counter = this.app.transport.counter;
     $('fact-position').textContent =

@@ -17,6 +17,8 @@
 
 const LOOKAHEAD_SECONDS = 0.12;
 const SCHEDULER_INTERVAL_MS = 25;
+/** Frames allowed to wait for the visual loop before the oldest are dropped. */
+const PENDING_LIMIT = 240;
 
 export class Transport {
   /**
@@ -169,6 +171,18 @@ export class Transport {
   _enqueueVisual(frame, state, when) {
     if (!this._pending) this._pending = [];
     this._pending.push({ frame, state, when });
+
+    // Backgrounded tabs are the reason for this cap. Browsers throttle
+    // requestAnimationFrame to a crawl -- and suspend it outright on a hidden
+    // tab -- while the AudioContext clock keeps running, so the scheduler keeps
+    // filling this queue with nobody draining it. An installation left running
+    // behind another window would grow it without bound.
+    //
+    // Sound is authoritative and pictures are transient, so the oldest frames
+    // are dropped rather than the newest: on coming back to the tab you want
+    // the present, not a fast-forward through the backlog.
+    const overflow = this._pending.length - PENDING_LIMIT;
+    if (overflow > 0) this._pending.splice(0, overflow);
   }
 
   _startRenderLoop() {
@@ -185,7 +199,11 @@ export class Transport {
           this.hooks.onFrame?.(frame, state);
         }
       }
-      this.visual.render(now, { pass: this.pass, progress: this.progress() });
+      this.visual.render(now, {
+        pass: this.pass,
+        progress: this.progress(),
+        keyboard: this.hooks.keyboardArmed?.() ?? false,
+      });
     };
     this._rafId = requestAnimationFrame(step);
   }

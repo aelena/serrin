@@ -58,6 +58,43 @@
       </section>
 
       <section>
+        <h2>keyboard</h2>
+        <label class="inline">
+          <input id="ctl-keyboard" type="checkbox" /> use keyboard
+        </label>
+        <p class="micro">
+          while this is on, letter and number keys play notes — the piece keeps
+          only <kbd>space</kbd> (play/pause) and <kbd>esc</kbd> (switch off).
+        </p>
+        <label>mode
+          <select id="ctl-keyboard-mode"></select>
+        </label>
+        <label>register
+          <select id="ctl-keyboard-register"></select>
+        </label>
+        <label>level <output id="out-keyboard-level">0.70</output>
+          <input id="ctl-keyboard-level" type="range" min="0" max="1" step="0.01" value="0.7" />
+        </label>
+        <label>timbre
+          <select id="ctl-keyboard-wave">
+            <option value="square" selected>square</option>
+            <option value="sine">sine</option>
+            <option value="triangle">triangle</option>
+            <option value="sawtooth">sawtooth</option>
+          </select>
+        </label>
+        <div class="row">
+          <label class="inline">
+            <input id="ctl-keyboard-crush" type="checkbox" /> through the bitcrusher
+          </label>
+          <label class="inline">
+            <input id="ctl-keyboard-show" type="checkbox" /> show keys on stage
+          </label>
+        </div>
+        <p class="micro" id="keyboard-readout">—</p>
+      </section>
+
+      <section>
         <h2>tempo</h2>
         <p class="micro" id="tempo-readout">—</p>
         <label>bpm <output id="out-bpm">120</output>
