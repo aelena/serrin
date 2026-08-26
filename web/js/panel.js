@@ -411,6 +411,14 @@ export class Panel {
   // -- painting ------------------------------------------------------------
   _paintFacts() {
     const meta = this.app.reader.meta;
+    // A commit-graph piece has facts a CSV one does not, and they explain what
+    // you are hearing better than the column list would.
+    if (meta.git) {
+      const git = meta.git;
+      $('preset-note').title =
+        `${git.commits} commits, ${git.merges} merges, trunk ${git.trunk}, ` +
+        `metric ${git.metric}`;
+    }
     $('fact-label').textContent = meta.label ?? '—';
     $('fact-seed').textContent = String(meta.seed ?? '—');
     $('fact-voices').textContent = `${this.app.reader.voiceCount} / 8`;

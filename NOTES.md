@@ -184,6 +184,59 @@ the stage. §4.5 wants it out of the piece, and §5.1 wants live drawing on the
 engine's clock; a separate window would satisfy the first and then have to fake
 the second.
 
+## The commit graph, and three wrong answers about branches
+
+Section 6.3 guessed that a repository would "fit as an ingestion adapter, not a
+separate system". That was right, and cheaply so: the only place in serrin that
+knows there is more than one kind of source is a single `if kind == "git"` in the
+CLI. Pedals, export and runtime never learned anything.
+
+The document's other predictions also held. Hash bytes really are noise, and the
+consequence is more interesting than it sounds: monitoring data has structure for
+the pedals to *break*, and hashes have none, so on a graph the aggressive pedals
+stop destroying and start merely relabelling. `xor_mask` on a hash is one flavour
+of randomness exchanged for another. That is why `merkle_drift` is the gentlest
+preset in the repo -- the source arrives pre-shredded, so the work left to do is
+the opposite one: `mod_reduce` pulling the noise *onto* a scale so it sounds like
+an instrument rather than static.
+
+Stale branches producing sparse voices worked exactly as described, and is now
+asserted: a three-commit branch changes value in under 15% of frames, because a
+voice holds its value between its own commits and `delta` reads holding as
+silence.
+
+**The hard part was branch membership, and it took three attempts.** Git does not
+record which branch a commit was made on -- a commit belongs to every branch that
+can reach it, and nearly all of them reach the whole trunk. So ownership has to
+be *assigned*, and the first two rules were both wrong in the worst way: they
+produced plausible output.
+
+1. *Claim in branch-recency order.* The newest branch reaches the entire trunk,
+   so it swallowed it. `main` and the merged feature branch were left owning
+   nothing and dropped as silent: two voices where the repo visibly had four.
+2. *Claim smallest-reachable-set first.* Better, and still wrong -- a feature
+   branch reaches the trunk too and is smaller than `main`, so it took the trunk
+   and `main` was left owning one commit. Four voices, three mislabelled.
+3. *Ask git the question it can actually answer.* `rev-list ref --not <all other
+   refs>` gives a branch's exclusive commits, which are unambiguously its own.
+   The shared trunk then goes to the trunk branch. Correct, and it needed a
+   conventional-name preference on top, because a long-lived feature branch can
+   out-reach `main` and would otherwise be handed the shared history -- true by
+   reachability, wrong by every other reading.
+
+None of the three would have been caught by a test against this repository, which
+had one branch and four commits. The fixture had to be built first -- and then
+fixed, because its first version stopped advancing `main` after branching, which
+made `main` an ancestor of the work branch and legitimately voiceless. The
+fixture was hiding the case it existed to test.
+
+**A `--numstat` parsing bug worth naming.** Git prints the pretty-format line,
+then a blank line, then the per-file stats. With the record separator at the *end*
+of the format string, each commit's stats landed in the *next* commit's chunk --
+which did not crash, did not lose data visibly, and quietly produced four commits
+all reporting identical churn. Separator at the front fixes it. The lesson is
+that a parser for a format with trailing blocks wants leading delimiters.
+
 ## Sessions, and the seam that had to be visible
 
 The temptation was one file that "saves the piece". That would have been a lie,
@@ -295,10 +348,10 @@ least specified part of the document — so it is a dataclass with defaults and 
 `mapping` block in every preset, meant to be argued with rather than a set of
 constants buried in a loop.
 
-## If the commit graph is explored (§6.3)
+## The commit graph, in hindsight
 
-The ingestion layer is the seam. `ingest_csv` returns a `Stream` and everything
-downstream only knows about `Stream`, so a `ingest_repo()` producing the same
-shape would need no changes anywhere else. The open question (traversal order)
-is a question about *that function* and nothing more, which is the strongest
-argument that §6.3's instinct was right.
+The prediction above turned out to be exactly right, which is why it is left
+here unedited: `ingest_repo()` returns a `Stream` and nothing downstream needed
+changing. The traversal question was indeed a question about that one function --
+answered chronological, because rhythm is the most musical thing a repository
+has and topological order discards it.

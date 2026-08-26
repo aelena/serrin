@@ -71,6 +71,7 @@ One entry point, five subcommands:
 
 ```bash
 python -m serrin render   -i data.csv -c presets/gritty_01.json   # the main event
+python -m serrin render   --repo . -c presets/merkle_drift.json    # a commit graph instead
 python -m serrin render   --session out/my.session.json           # re-render what you saved
 python -m serrin session  out/my.session.json --to-preset p.json  # freeze it as a preset
 python -m serrin inspect  -i data.csv                             # look before rendering
@@ -111,6 +112,61 @@ throws absolute magnitude away deliberately.
 | `--rate` | frames per second, if you would rather not think in BPM |
 | `--log-scale` | log-normalize on the way in, for bursty data |
 | `--limit` | read at most N rows |
+
+### A repository as the source
+
+Section 6.3's parked idea, now real. It is an *ingestion adapter* and nothing
+more: it produces the same `Stream` a CSV does, so pedals, forked export and the
+whole runtime are untouched.
+
+```bash
+python -m serrin inspect --repo .                        # look at the graph first
+python -m serrin render  --repo . -c presets/merkle_drift.json
+python -m serrin render  --repo . --metric interval --traversal topo
+```
+
+**Branches are voices.** Each branch takes a new value at each of *its own*
+commits and holds in between — so a branch with three commits becomes a voice
+that speaks three times and is still the rest of the time. `delta` reads a held
+value as zero, so silence falls out of the data rather than being imposed on it.
+Density becomes a property of the repo's real activity, exactly as the doc
+predicted.
+
+**Which commits are whose** is a question git cannot answer directly — a commit
+belongs to every branch that can reach it. So a branch's *exclusive* commits
+(`rev-list ref --not <every other ref>`) are unambiguously its own, and the
+shared trunk goes to the trunk branch (`main`/`master`/`trunk`/`develop` if
+present, otherwise whichever reaches the most). A fully merged branch owns
+nothing and is dropped — and *named*, because "my branch is missing" is otherwise
+a mystery.
+
+**Metrics** — what a commit contributes:
+
+| metric | reads |
+|---|---|
+| `hash` | bytes of the commit id — real noise, needs no pedals to be chaotic |
+| `interval` | seconds since that branch's last commit — the repo's rhythm |
+| `churn` / `insertions` / `deletions` / `files` | size of the change |
+| `parents` | merges spike, and a merge *is* `interleave` happening in the data |
+| `hour` | hour of day — diurnal periodicity |
+| `author` | hashed identity — the voice changes when the person does |
+
+`hash` is not renormalized (already uniform), `parents` and `hour` use fixed
+scales (0–8 parents, 0–23 hours) so they mean the same thing in every repo, and
+the heavy-tailed ones are log-scaled by default.
+
+**Traversal** — the question section 8 left open. The default is **chronological**,
+because the piece exists in time and a repository's rhythm (bursts, nights, dead
+weekends) is the most musical property it has. `--traversal topo` throws the real
+timestamps away for an even cadence: correct as a graph traversal, inert as
+music. `reverse` runs history backwards.
+
+`presets/merkle_drift.json` is built for this and is deliberately gentle on the
+pedals: hash bytes have no structure left for `xor_mask` or `bitcrush` to break,
+so those would only relabel one kind of randomness as another. It uses `delta`
+to read the blips, `mod_reduce` to pull them onto a scale, and `cross_mix` so the
+trunk perturbs the branches the way a merge perturbs a repo. Graphs are finite,
+so it is a closed piece with `loop: once` — the doc's own conclusion.
 
 ### Tempo
 
@@ -415,7 +471,7 @@ invert · <kbd>f</kbd> fullscreen · <kbd>1</kbd>–<kbd>8</kbd> mute a voice.
 python tests/run_all.py          # both suites, and they cross-check each other
 ```
 
-135 Python tests, 70 Node tests, plus a cross-language round trip. Weighted toward the two properties the aesthetic
+166 Python tests, 70 Node tests, plus a cross-language round trip. Weighted toward the two properties the aesthetic
 depends on: **determinism** (a promise that is not tested is a wish) and
 **invariants** (a pedal that breaks one fails hundreds of frames later, in the
 browser, which is a miserable way to find out).
@@ -431,8 +487,8 @@ the pipeline rendered.
 ## Layout
 
 ```
-serrin/           the pipeline: rng, scales, tempo, ingest, pedals, chain,
-                  envelope, export, session, cli
+serrin/           the pipeline: rng, scales, tempo, ingest, ingest_git,
+                  pedals, chain, envelope, export, session, cli
 presets/          chain definitions
 scripts/          sample data generator, dev server
 web/              the runtime (index.html, style.css, js/)
@@ -460,5 +516,5 @@ Honest accounting of what is specified but not yet real:
   AudioWorklet.
 - **WebGL** is untouched — Canvas2D is holding up fine at eight voices and a
   ~240-column waterfall, as §4.1 predicted it might.
-- **Alternative data sources** (commit graph, tides, UVB-76) — the ingestion layer
-  is where they plug in, but only CSV exists so far.
+- **Tides and UVB-76** — the ingestion layer is where they plug in; CSV and git
+  repositories exist so far.

@@ -46,6 +46,12 @@ const PRESETS = [
     note: 'everything on: bit reverse, cross-mix, 2-bit crush at the climax',
   },
   {
+    id: 'merkle_drift',
+    audio: '../out/repo_audio.json',
+    visual: '../out/repo_visual.json',
+    note: 'a commit graph: branches are voices, hashes are the noise (section 6.3)',
+  },
+  {
     id: 'endless_drift',
     audio: '../out/endless_drift_audio.json',
     visual: '../out/endless_drift_visual.json',

@@ -134,6 +134,20 @@ class Session:
         defaults still apply to anything the session did not pin down.
         """
         source = self.source
+        if self.kind == "git":
+            # A graph's inputs are a different set entirely, and passing CSV
+            # keywords to ingest_repo would be a TypeError rather than a
+            # near-miss -- so they are kept apart.
+            mapping = {
+                "metric": source.get("metric"),
+                "traversal": source.get("traversal"),
+                "branch_names": source.get("branches") or source.get("columns"),
+                "bit_depth": source.get("bit_depth"),
+                "limit": source.get("limit"),
+                "tempo": self.tempo(),
+            }
+            return {key: value for key, value in mapping.items() if value not in (None, [])}
+
         mapping = {
             "columns": source.get("columns"),
             "bit_depth": source.get("bit_depth"),
@@ -149,12 +163,17 @@ class Session:
     def path(self) -> str:
         return self.source["path"]
 
+    @property
+    def kind(self) -> str:
+        """``csv`` or ``git``. Sessions from before the git adapter say csv."""
+        return self.source.get("kind", "csv")
+
     def describe(self) -> str:
         chain = self.chain()
         lines = [
             f"session {self.label or '(unlabelled)'}",
             f"  saved      {self.saved_at or 'unknown'}",
-            f"  source     {self.path}",
+            f"  source     {self.path}  ({self.kind})",
             f"  columns    {self.source.get('columns') or 'auto'}",
         ]
         grid = self.tempo()

@@ -21,6 +21,14 @@ from .chain import Chain, default_chain
 from .envelope import ARCHETYPES, EQUATIONS, Envelope, voice_order
 from .export import MappingConfig, build_piece, write_json
 from .ingest import IngestError, ingest_csv
+from .ingest_git import (
+    METRICS,
+    TRAVERSALS,
+    GitError,
+    auto_seed_repo,
+    describe_repo,
+    ingest_repo,
+)
 from .scales import SCALE_BANK, resolve
 from .session import Session, SessionError, promote_to_preset
 from .stream import MAX_VOICES
@@ -61,6 +69,35 @@ def _envelope_from_args(args, chain: Chain) -> Envelope:
     if chain.envelope:
         return Envelope.from_spec(chain.envelope)
     return Envelope.constant(1.0)
+
+
+def _read_source(args, ingest_opts: dict, source: str, kind: str):
+    """Ingest from wherever the source lives. Everything downstream is identical.
+
+    This function is the entire cost of section 6.3's claim that a commit graph
+    "fits as an ingestion adapter, not a separate system" -- the branch below is
+    the only place in serrin that knows there is more than one kind of source.
+    """
+    if kind == "git":
+        return ingest_repo(
+            source,
+            metric=args.metric or ingest_opts.get("metric", "hash"),
+            traversal=args.traversal or ingest_opts.get("traversal", "chrono"),
+            branch_names=_split_columns(args.branches) or ingest_opts.get("branches"),
+            bit_depth=args.bit_depth or ingest_opts.get("bit_depth", 8),
+            tempo=_tempo_from_args(args, ingest_opts),
+            limit=args.limit,
+        )
+    return ingest_csv(
+        source,
+        columns=_split_columns(args.columns) or ingest_opts.get("columns"),
+        bit_depth=args.bit_depth or ingest_opts.get("bit_depth", 8),
+        granularity=args.granularity or ingest_opts.get("granularity", 1),
+        aggregation=args.aggregation or ingest_opts.get("aggregation", "mean"),
+        tempo=_tempo_from_args(args, ingest_opts),
+        log_scale=args.log_scale or bool(ingest_opts.get("log_scale", False)),
+        limit=args.limit,
+    )
 
 
 def _tempo_from_args(args, ingest_opts: dict) -> Tempo:
@@ -124,35 +161,39 @@ def cmd_render(args) -> int:
     session = Session.load(args.session) if args.session else None
     if session is not None:
         chain = session.chain()
-        source = args.input or session.path
+        source = args.repo or args.input or session.path
+        kind = "git" if args.repo else session.source.get("kind", "csv")
         overrides = session.ingest_kwargs()
     else:
         chain = _load_chain(args.chain)
-        source = args.input
+        source = args.repo or args.input
+        kind = "git" if args.repo else "csv"
         overrides = {}
 
     if not source:
-        raise IngestError("nothing to render: pass --input or --session")
+        raise IngestError("nothing to render: pass --input, --repo or --session")
 
     ingest_opts = {**dict(chain.ingest), **overrides}
     if args.chain and session is not None:
         # An explicit --chain alongside --session means "that data, this chain".
         chain = _load_chain(args.chain)
 
-    columns = _split_columns(args.columns) or ingest_opts.get("columns")
-    stream = ingest_csv(
-        source,
-        columns=columns,
-        bit_depth=args.bit_depth or ingest_opts.get("bit_depth", 8),
-        granularity=args.granularity or ingest_opts.get("granularity", 1),
-        aggregation=args.aggregation or ingest_opts.get("aggregation", "mean"),
-        tempo=_tempo_from_args(args, ingest_opts),
-        log_scale=args.log_scale or bool(ingest_opts.get("log_scale", False)),
-        limit=args.limit,
-    )
+    stream = _read_source(args, ingest_opts, source, kind)
+    columns = stream.names
     args.input = source
 
-    seed = args.seed if args.seed is not None else chain.resolve_seed(source)
+    if args.seed is not None:
+        seed = args.seed
+    elif kind == "git" and chain.seed_override is None and chain.seed_mode == "auto":
+        # The CSV rule is "hash the first N rows"; the graph equivalent is to
+        # hash the first N commit ids, so the seed still changes when the head
+        # of the data changes and not otherwise.
+        seed = auto_seed_repo(source)
+    else:
+        seed = chain.resolve_seed(source)
+
+    if kind == "git":
+        print(describe_repo(stream))
     if args.verbose:
         print(f"ingested {stream.describe()}")
         print(chain.describe())
@@ -206,17 +247,37 @@ def cmd_render(args) -> int:
         # The runtime block is carried over from an input session if there was
         # one: a re-render should not silently discard the author's live
         # settings just because the pipeline ran again.
+        source_block = {
+            "path": str(source),
+            "kind": kind,
+            "columns": columns,
+            "bit_depth": stream.bit_depth,
+            "limit": args.limit,
+            "tempo": stream.tempo.to_json(),
+        }
+        if kind == "git":
+            # A graph's inputs are metric/traversal/branches, and without them a
+            # re-render would silently fall back to the defaults -- producing a
+            # different piece from a file that claims to describe this one.
+            git_meta = stream.meta.get("git", {})
+            source_block.update(
+                {
+                    "metric": git_meta.get("metric"),
+                    "traversal": git_meta.get("traversal"),
+                    "branches": git_meta.get("branches"),
+                }
+            )
+        else:
+            source_block.update(
+                {
+                    "granularity": stream.meta.get("granularity", 1),
+                    "aggregation": stream.meta.get("aggregation"),
+                    "log_scale": stream.meta.get("log_scale", False),
+                }
+            )
+
         saved = Session(
-            source={
-                "path": str(source),
-                "columns": columns,
-                "bit_depth": stream.bit_depth,
-                "granularity": stream.meta.get("granularity", 1),
-                "aggregation": stream.meta.get("aggregation"),
-                "log_scale": stream.meta.get("log_scale", False),
-                "limit": args.limit,
-                "tempo": stream.tempo.to_json(),
-            },
+            source=source_block,
             preset=chain.to_json(),
             runtime=dict(session.runtime) if session else {},
             streams={"audio": str(out_audio), "visual": str(out_visual)},
@@ -236,23 +297,24 @@ def cmd_render(args) -> int:
 # inspect
 # ---------------------------------------------------------------------------
 def cmd_inspect(args) -> int:
-    stream = ingest_csv(
-        args.input,
-        columns=_split_columns(args.columns),
-        bit_depth=args.bit_depth or 8,
-        granularity=args.granularity or 1,
-        tempo=_tempo_from_args(args, {}),
-        limit=args.limit,
-    )
+    source = args.repo or args.input
+    if not source:
+        raise IngestError("pass --input for a CSV or --repo for a git repository")
+    kind = "git" if args.repo else "csv"
+    stream = _read_source(args, {}, source, kind)
+    if kind == "git":
+        print(describe_repo(stream))
+        print()
     print(stream.describe())
-    print(f"\nauto seed: {Chain(name='probe').resolve_seed(args.input)}")
+    seed = auto_seed_repo(source) if kind == "git" else Chain(name="probe").resolve_seed(source)
+    print(f"\nauto seed: {seed}")
     for strategy in ("columns", "variance", "sparse"):
         order = voice_order(stream, strategy)
         print(f"voice entry ({strategy}): {[stream.names[i] for i in order]}")
 
     if args.chain:
         chain = _load_chain(args.chain)
-        after = chain.apply(stream, source=args.input)
+        after = chain.apply(stream, source=source)
         print(f"\nafter {chain.name}:")
         print(after.describe())
 
@@ -359,6 +421,20 @@ def build_parser() -> argparse.ArgumentParser:
     render = sub.add_parser("render", help="run the pipeline and export both streams")
     render.add_argument("--input", "-i", help="source CSV (or take it from --session)")
     render.add_argument(
+        "--repo",
+        "-r",
+        help="a git repository as the source instead of a CSV (section 6.3)",
+    )
+    render.add_argument(
+        "--metric",
+        choices=sorted(METRICS),
+        help="what a commit contributes: hash (default), interval, churn, parents, hour...",
+    )
+    render.add_argument(
+        "--traversal", choices=list(TRAVERSALS), help="commit order (default chrono)"
+    )
+    render.add_argument("--branches", help="comma-separated branches to use as voices")
+    render.add_argument(
         "--session", help="re-render a saved session: its source and its chain"
     )
     render.add_argument(
@@ -413,7 +489,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     # -- inspect ------------------------------------------------------------
     inspect = sub.add_parser("inspect", help="look at a CSV without rendering")
-    inspect.add_argument("--input", "-i", required=True)
+    inspect.add_argument("--input", "-i", help="source CSV")
+    inspect.add_argument("--repo", "-r", help="a git repository instead")
+    inspect.add_argument("--metric", choices=sorted(METRICS))
+    inspect.add_argument("--traversal", choices=list(TRAVERSALS))
+    inspect.add_argument("--branches")
     inspect.add_argument("--chain", "-c", help="also show the stream after this chain")
     inspect.add_argument("--columns")
     inspect.add_argument("--bit-depth", type=int)
@@ -464,7 +544,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except (IngestError, SessionError, TempoError, ValueError, FileNotFoundError) as exc:
+    except (
+        GitError,
+        IngestError,
+        SessionError,
+        TempoError,
+        ValueError,
+        FileNotFoundError,
+    ) as exc:
         print(f"serrin: {exc}", file=sys.stderr)
         return 2
 

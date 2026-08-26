@@ -365,6 +365,10 @@ def build_piece(
         "delay_note": delay_note,
         "source": stream.meta.get("source"),
         "columns": stream.meta.get("columns"),
+        "source_kind": stream.meta.get("source_kind", "csv"),
+        # Present only for a commit-graph source: branch ownership, merge count,
+        # the metric and the traversal. The panel shows it; nothing depends on it.
+        "git": stream.meta.get("git"),
         "granularity": stream.meta.get("granularity", 1),
         # Everything ingestion was called with, so a session saved in the
         # browser can reconstruct the render exactly rather than approximately.
@@ -379,6 +383,8 @@ def build_piece(
                 "aggregation",
                 "log_scale",
                 "tempo",
+                "source_kind",
+                "git",
             )
         },
         "chain": chain.to_json() if chain is not None else None,

@@ -1,0 +1,68 @@
+{
+  "name": "merkle_drift",
+  "seed_mode": "auto",
+  "notes": "For a commit graph (section 6.3). Deliberately gentle on the pedals: hash bytes are already indistinguishable from noise, so there is no structure left for xor_mask or bitcrush to break -- they would only relabel one kind of randomness as another. Instead delta reads the blips (a held value between commits is silence), mod_reduce pulls those blips onto a scale so the sparse branches sound like an instrument rather than static, and cross_mix lets the trunk perturb the branches the way a merge perturbs a repo.",
+  "chain": [
+    {
+      "pedal": "delta",
+      "params": {
+        "order": 1,
+        "signed": true
+      }
+    },
+    {
+      "pedal": "mod_reduce",
+      "params": {
+        "scale": "aeolian",
+        "octaves": 3
+      }
+    },
+    {
+      "pedal": "cross_mix",
+      "params": {
+        "driver_column": 0,
+        "op": "add",
+        "depth": 0.4
+      },
+      "at_intensity": 0.4
+    },
+    {
+      "pedal": "stutter_repeat",
+      "params": {
+        "threshold": 1,
+        "repeats": 3,
+        "block": 6,
+        "detect_channel": 0
+      },
+      "at_intensity": 0.6
+    }
+  ],
+  "ingest": {
+    "metric": "hash",
+    "traversal": "chrono",
+    "tempo": {
+      "bpm": 84,
+      "subdivision": 8,
+      "swing": 0.12,
+      "beats_per_bar": 4
+    }
+  },
+  "envelope": {
+    "kind": "archetype",
+    "archetype": "climax",
+    "curvature": 1.1
+  },
+  "mapping": {
+    "quantize_to": "aeolian",
+    "note_low": 40,
+    "note_high": 76,
+    "gate_threshold": 2,
+    "amp_floor": 0.08
+  },
+  "piece": {
+    "mode": "closed",
+    "loop": "once",
+    "voice_entry": "sparse",
+    "delay_note": "1/4"
+  }
+}
