@@ -41,7 +41,6 @@ export class Panel {
   constructor(app) {
     this.app = app; // the live engine handle from main.js
     this.root = $('panel');
-    this.visible = false;
     // Re-appliers for every slider and checkbox, so a preset switch can push the
     // author's current settings into the freshly built engines.
     this._appliers = [];

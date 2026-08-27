@@ -824,10 +824,18 @@ key did two unrelated things depending on hidden state.
 python tests/run_all.py          # both suites, and they cross-check each other
 ```
 
-288 Python tests, 152 Node tests, plus a cross-language round trip. Weighted toward the two properties the aesthetic
+288 Python tests, 166 Node tests, plus a cross-language round trip. Weighted toward the two properties the aesthetic
 depends on: **determinism** (a promise that is not tested is a wish) and
 **invariants** (a pedal that breaks one fails hundreds of frames later, in the
 browser, which is a miserable way to find out).
+
+`test_ui_boot.mjs` constructs the panel, studio and console against a minimal
+DOM stub and runs their first paint. It exists because a crash on load once
+shipped with every other test green: the state machine was covered thoroughly
+and the code that renders it was not covered at all, leaving the worst failure
+mode — a blank page — undetectable. It checks that the code runs, not that
+anything looks right; a real headless DOM to assert on a canvas painter would
+still cost more than it catches.
 
 The runner hands Python's numbers to the Node suite to assert against — the
 voice-activation curve and the whole tempo grid, swung onsets included. Both

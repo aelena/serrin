@@ -62,7 +62,6 @@ export class Studio {
   constructor(app) {
     this.app = app;
     this.root = $('studio');
-    this.visible = false;
     this.catalog = null;
     this.pieces = [];
     this.folder = null;
