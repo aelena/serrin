@@ -152,6 +152,29 @@ test('never claims the keys the piece reserves', () => {
   }
 });
 
+test('arming the keyboard cannot lock the author out of the panel', () => {
+  // It could: `p` played a note, and the only way back was Escape, which
+  // disarmed the very thing being configured.
+  for (const mode of ['random', 'notes']) {
+    const { keyboard } = makeKeyboard();
+    keyboard.setMode(mode);
+    keyboard.setKeymap({ Key_p: { kind: 'degree', degree: 0 } });
+    for (const key of ['p', 'P']) {
+      assert.ok(!keyboard.claims(keyEvent(key)), `${mode} claimed ${key}`);
+      assert.equal(keyboard.press(keyEvent(key)), null);
+    }
+  }
+});
+
+test('the reserved set stays short', () => {
+  // It is the transport and the ways back out, not a growing pile of author
+  // conveniences. Everything else single-character belongs to the instrument.
+  const { keyboard } = makeKeyboard();
+  for (const key of ['i', 'f', '1', '8', 'q', ';']) {
+    assert.ok(keyboard.claims(keyEvent(key)), `${key} was reserved away from the instrument`);
+  }
+});
+
 test('never claims modifier combinations', () => {
   const { keyboard } = makeKeyboard();
   for (const flag of ['ctrlKey', 'metaKey', 'altKey']) {

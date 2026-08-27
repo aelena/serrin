@@ -50,8 +50,19 @@ export const MODES = {
   beats: { label: 'beats · sequence and record (pending)', ready: false },
 };
 
-/** Keys the piece keeps for itself even while the keyboard is live. */
-const RESERVED = new Set([' ', 'Escape', 'Tab', 'F5', 'F11', 'F12']);
+/**
+ * Keys the piece keeps for itself even while the keyboard is live.
+ *
+ * Deliberately short. These are the transport and the ways *back out*: play,
+ * disarm, and open the panel. `p` is here because arming the keyboard used to
+ * lock the author out of the panel -- `p` played a note, and the only way back
+ * was Escape, which disarmed the very thing being configured.
+ *
+ * Everything else single-character is the instrument's, including the digits
+ * that mute voices when it is disarmed. That is a deliberate precedence rather
+ * than a collision: while you are playing, the keys play.
+ */
+const RESERVED = new Set([' ', 'Escape', 'Tab', 'p', 'P', 'F5', 'F11', 'F12']);
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 

@@ -747,9 +747,17 @@ document as the stage rather than a second window because live envelope drawing
 has to be on the engine's clock.
 
 **Keyboard:** <kbd>space</kbd> play/pause · <kbd>p</kbd> panel · <kbd>F2</kbd>
-console · <kbd>F3</kbd> studio · <kbd>i</kbd> invert · <kbd>f</kbd> fullscreen ·
-<kbd>1</kbd>–<kbd>8</kbd> mute a voice · <kbd>↑</kbd>/<kbd>↓</kbd> shift octave
-while playing.
+console · <kbd>F3</kbd> studio · <kbd>f</kbd> fullscreen · <kbd>1</kbd>–<kbd>8</kbd>
+mute a voice · <kbd>↑</kbd>/<kbd>↓</kbd> shift octave while playing.
+
+With the keyboard armed, letters and digits play notes instead.
+<kbd>space</kbd>, <kbd>esc</kbd> and <kbd>p</kbd> stay reserved — the transport
+and the ways back out, so arming the keyboard cannot lock you out of the panel.
+
+Inverting to a light palette is a **panel checkbox, not a shortcut**. It used to
+be <kbd>i</kbd>, which repainted the whole piece from a bare letter key —
+undocumented, drastic, and only when the keyboard happened to be disarmed, so one
+key did two unrelated things depending on hidden state.
 
 **URL params:** `?preset=` · `?audio=&visual=` · `?panel=1` · `?autoplay=1` ·
 `?speed=`.

@@ -279,7 +279,20 @@ async function boot() {
   requestAnimationFrame(panelLoop);
 }
 
-// -- keyboard: the piece needs no pointer, the author needs no menus ---------
+// -- keyboard --------------------------------------------------------------
+//
+// Two rules, learned the hard way.
+//
+// **The stage does not repaint itself on a stray keypress.** `i` used to invert
+// the whole piece to a light palette from a bare letter key -- undocumented,
+// drastic, and only when the keyboard happened to be disarmed, so the same key
+// did two unrelated things depending on hidden state. Inverting is an author
+// choice and lives in the panel, where the author's choices live.
+//
+// **The way back in is always reachable.** `p` is reserved by the keyboard
+// engine, so arming the keyboard cannot lock you out of the panel. It could
+// before: `p` played a note, and the only way back was Escape, which disarmed
+// the thing you were trying to configure.
 window.addEventListener('keydown', async (event) => {
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
 
@@ -331,10 +344,6 @@ window.addEventListener('keydown', async (event) => {
       // single-character keys.
       event.preventDefault();
       app.console?.toggle();
-      break;
-    case 'i':
-    case 'I':
-      app.visual.invert = !app.visual.invert;
       break;
     case 'f':
     case 'F':
