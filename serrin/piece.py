@@ -457,9 +457,16 @@ class Piece:
         return [s for s in self.performance.samples if not self.resolve(s.path).exists()]
 
     # -- the render layer ---------------------------------------------------
+    #: What a source can be. `graph` is a repository's history exported to JSON,
+    #: which travels with the piece where a clone does not.
+    KINDS = ("csv", "git", "graph")
+
     @property
     def kind(self) -> str:
-        return self.source.get("kind", "csv")
+        kind = self.source.get("kind", "csv")
+        if kind not in Piece.KINDS:
+            raise PieceError(f"unknown source kind {kind!r}; use one of {Piece.KINDS}")
+        return kind
 
     @property
     def source_path(self) -> Path:
@@ -483,7 +490,10 @@ class Piece:
     def ingest_kwargs(self) -> dict:
         """Keyword arguments for whichever adapter this piece's source needs."""
         source = self.source
-        if self.kind == "git":
+        if self.kind in ("git", "graph"):
+            # A graph file and a live repository take the same options, which is
+            # the point: switching between them is a one-field change, not a
+            # different configuration.
             mapping = {
                 "metric": source.get("metric"),
                 "traversal": source.get("traversal"),

@@ -798,3 +798,16 @@ kbd {
   margin: 0 0 2rem;
   white-space: pre-wrap;
 }
+
+
+/* Source problems. Loud enough to read, not loud enough to be an alarm: most of
+   them are "this column is constant", which is information rather than failure. */
+.problems {
+  margin: 0 0 0.7rem;
+  padding-left: 1.1rem;
+  color: #ff9d5c;
+  font-size: 0.64rem;
+  line-height: 1.6;
+}
+
+.problems li { margin-bottom: 0.2rem; }

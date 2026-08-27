@@ -88,6 +88,7 @@ python -m serrin render   --piece my-album/01-decay              # render it
 python -m serrin pieces   my-album                               # the album
 python -m serrin render   -i data.csv -c presets/gritty_01.json   # or one-off
 python -m serrin render   --repo . -c presets/merkle_drift.json    # a commit graph instead
+python -m serrin graph    --repo . -o history.json                # or its history as a file
 python -m serrin render   --session out/my.session.json           # re-render what you saved
 python -m serrin session  out/my.session.json --to-preset p.json  # freeze it as a preset
 python -m serrin inspect  -i data.csv                             # look before rendering
@@ -183,6 +184,45 @@ so those would only relabel one kind of randomness as another. It uses `delta`
 to read the blips, `mod_reduce` to pull them onto a scale, and `cross_mix` so the
 trunk perturbs the branches the way a merge perturbs a repo. Graphs are finite,
 so it is a closed piece with `loop: once` — the doc's own conclusion.
+
+### A repository's history as a file
+
+The live adapter needs the clone on this machine and a working `git`. Fine for
+your own work, useless for three things people want: rendering from a repo you
+have not cloned, sharing a piece whose source travels with it, and putting a
+graph piece in an album someone else can open.
+
+So a history can be exported and ingested, and **both produce the same stream** —
+guaranteed by going through the same code, not by carefulness. There is a test
+asserting identical fingerprints across every metric.
+
+```bash
+python -m serrin graph --repo . -o history.json      # export
+python -m serrin graph --check history.json          # inspect and validate
+python -m serrin render --graph history.json -c presets/merkle_drift.json
+```
+
+In the studio, `kind: graph` takes a `.json` you choose, or **export from a
+repository…** reads a clone once and leaves a portable copy in the piece folder.
+
+**Two things are baked in at export time**, because the file cannot recompute
+them:
+
+- *Ownership.* Deciding which branch owns a commit needs
+  `rev-list ref --not <others>` against a real repository; a flat commit list
+  would mean reimplementing reachability, badly.
+- *The seed.* A repository seeds from HEAD's own first commits in git's order,
+  and a timeline merged across branches is a different list. Without recording
+  it, a piece would change seed the moment its source switched from the clone to
+  the export.
+
+A hand-written history still loads. Without `owner` it collapses to one voice and
+`validate` says so, because a file that quietly becomes one voice looks like a
+bug in the pipeline rather than a gap in the file. Same for missing per-commit
+stats: the churn, insertions, deletions and files metrics would read as flat.
+Missing timestamps are fatal — the chronological order and the `interval` metric
+both need them. And topological order is *refused* rather than faked: it needs
+the DAG walked, and a flat list cannot.
 
 ### Tempo
 
@@ -326,9 +366,20 @@ produce one surface that is bad at both.
 
 What it edits:
 
-- **source** — path, and a column picker that shows *why* each column would be
-  dropped: constant, monotonic, or unparseable. Serrin does not clean data, so
-  the honest thing is to name the problem and let you fix it upstream.
+- **source** — one of three kinds, with a file dialog and a problem list:
+  - `csv` — **choose a CSV…** copies it into the piece folder, because a browser
+    hands over contents and not a path, and because data that travels with the
+    piece is the better default. A path field stays for a file too large to want
+    two copies of. The column picker shows *why* each column would be dropped:
+    constant, monotonic, or unparseable.
+  - `git` — a clone on this machine, read on every render.
+  - `graph` — an exported history, which travels with the piece.
+
+  Serrin does not clean data, so whatever is wrong with a source is named here
+  and has to be fixed upstream. The endpoint reads the path *in the form*, not
+  the one saved on disk — a working copy is unsaved by definition, and the old
+  version answered about the saved path, which is why typing a new one never
+  refreshed anything.
 - **tempo** — bpm, subdivision, swing, metre, with the resulting frame rate shown.
 - **pedal chain** — add, remove, reorder, edit every parameter, set the intensity
   each pedal switches on at.
@@ -824,7 +875,7 @@ key did two unrelated things depending on hidden state.
 python tests/run_all.py          # both suites, and they cross-check each other
 ```
 
-288 Python tests, 166 Node tests, plus a cross-language round trip. Weighted toward the two properties the aesthetic
+322 Python tests, 166 Node tests, plus a cross-language round trip. Weighted toward the two properties the aesthetic
 depends on: **determinism** (a promise that is not tested is a wish) and
 **invariants** (a pedal that breaks one fails hundreds of frames later, in the
 browser, which is a miserable way to find out).
@@ -848,7 +899,7 @@ the pipeline rendered.
 ## Layout
 
 ```
-serrin/           the pipeline: rng, scales, tempo, ingest, ingest_git,
+serrin/           the pipeline: rng, scales, tempo, ingest, ingest_git, graph,
                   pedals, chain, envelope, export, trace, session, piece, cli
 presets/          chain definitions
 scripts/          sample data generator, dev server
@@ -883,5 +934,5 @@ Honest accounting of what is specified but not yet real:
   capture live playing.
 - **WebGL** is untouched — Canvas2D is holding up fine at eight voices and a
   ~240-column waterfall, as §4.1 predicted it might.
-- **Tides and UVB-76** — the ingestion layer is where they plug in; CSV and git
-  repositories exist so far.
+- **Tides and UVB-76** — the ingestion layer is where they plug in; CSV, git
+  repositories and exported histories exist so far.

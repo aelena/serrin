@@ -21,6 +21,16 @@ from .chain import Chain, default_chain
 from .envelope import ARCHETYPES, EQUATIONS, Envelope, voice_order
 from .export import MappingConfig, build_render, trace_mapping, write_json
 from .ingest import IngestError, ingest_csv
+from .graph import (
+    GraphError,
+    auto_seed_graph,
+    describe_graph,
+    export_graph,
+    graph_facts,
+    ingest_graph,
+    load_graph,
+    validate_graph,
+)
 from .ingest_git import (
     METRICS,
     TRAVERSALS,
@@ -87,6 +97,32 @@ def _read_source(args, ingest_opts: dict, source: str, kind: str, recorder=None)
     """
     def flag(name, default=None):
         return getattr(args, name, None) or default
+    if kind == "graph":
+        stream = ingest_graph(
+            source,
+            metric=flag("metric", ingest_opts.get("metric", "hash")),
+            traversal=flag("traversal") or ingest_opts.get("traversal"),
+            branch_names=_split_columns(flag("branches")) or ingest_opts.get("branches"),
+            bit_depth=flag("bit_depth", ingest_opts.get("bit_depth", 8)),
+            tempo=_tempo_from_args(args, ingest_opts),
+            limit=flag("limit"),
+        )
+        if recorder is not None:
+            recorder.add(
+                "ingest",
+                f"read {Path(source).name} (history file)",
+                stream,
+                params={
+                    "metric": stream.meta["git"]["metric"],
+                    "traversal": stream.meta["git"]["traversal"],
+                },
+                detail=dict(stream.meta["git"]),
+                note=(
+                    "an exported history: ownership was decided when the file was "
+                    "written, since it needs the repository to compute"
+                ),
+            )
+        return stream
     if kind == "git":
         stream = ingest_repo(
             source,
@@ -201,8 +237,8 @@ def cmd_render(args) -> int:
     piece = Piece.load(args.piece) if args.piece else None
     if piece is not None:
         chain = piece.chain()
-        source = args.repo or args.input or piece.source_path
-        kind = "git" if args.repo else piece.kind
+        source = args.repo or args.graph or args.input or piece.source_path
+        kind = "git" if args.repo else ("graph" if args.graph else piece.kind)
         overrides = piece.ingest_kwargs()
         session = None
     elif args.session:
@@ -219,8 +255,8 @@ def cmd_render(args) -> int:
         overrides = session.ingest_kwargs()
     else:
         chain = _load_chain(args.chain)
-        source = args.repo or args.input
-        kind = "git" if args.repo else "csv"
+        source = args.repo or args.graph or args.input
+        kind = "git" if args.repo else ("graph" if args.graph else "csv")
         overrides = {}
 
     if not source:
@@ -258,6 +294,8 @@ def cmd_render(args) -> int:
 
     if kind == "git":
         print(describe_repo(stream))
+    elif kind == "graph":
+        print(describe_graph(stream))
     if args.verbose:
         print(f"ingested {stream.describe()}")
         print(chain.describe())
@@ -391,17 +429,28 @@ def cmd_render(args) -> int:
 # inspect
 # ---------------------------------------------------------------------------
 def cmd_inspect(args) -> int:
-    source = args.repo or args.input
+    source = args.repo or args.graph or args.input
     if not source:
-        raise IngestError("pass --input for a CSV or --repo for a git repository")
-    kind = "git" if args.repo else "csv"
+        raise IngestError(
+            "pass --input for a CSV, --repo for a repository, or --graph for an "
+            "exported history"
+        )
+    kind = "git" if args.repo else ("graph" if args.graph else "csv")
     recorder = Trace(window=args.head or 16, label=str(source)) if args.trace else None
     stream = _read_source(args, {}, source, kind, recorder)
     if kind == "git":
         print(describe_repo(stream))
         print()
+    elif kind == "graph":
+        print(describe_graph(stream))
+        print()
     print(stream.describe())
-    seed = auto_seed_repo(source) if kind == "git" else Chain(name="probe").resolve_seed(source)
+    if kind == "git":
+        seed = auto_seed_repo(source)
+    elif kind == "graph":
+        seed = auto_seed_graph(source)
+    else:
+        seed = Chain(name="probe").resolve_seed(source)
     print(f"\nauto seed: {seed}")
     for strategy in ("columns", "variance", "sparse"):
         order = voice_order(stream, strategy)
@@ -479,6 +528,61 @@ def cmd_curve(args) -> int:
     return 0
 
 
+def cmd_graph(args) -> int:
+    """Export a repository's history to a portable JSON file, or check one.
+
+    The format has to be producible or it is useless -- a source nobody can
+    create is not a source. This is that half.
+    """
+    if args.check:
+        document = load_graph(args.check)
+        problems = validate_graph(document)
+        facts = graph_facts(document)
+        print(f"history {args.check}")
+        print(f"  repo       {facts['repo'] or '(unnamed)'}")
+        print(f"  commits    {facts['commits']}  ({facts['merges']} merges, "
+              f"{facts['authors']} authors)")
+        print(f"  traversal  {facts['traversal']}")
+        print(f"  stats      {'yes' if facts['has_stats'] else 'no'}")
+        if facts["span_seconds"]:
+            print(f"  spans      {facts['span_seconds'] / 86400:.1f} days")
+        for ref, count in facts["owned"].items():
+            print(f"    {ref:<28} owns {count:>5} commits")
+        if problems:
+            print("\n  problems:")
+            for problem in problems:
+                print(f"    - {problem}")
+            return 1
+        print("\n  no problems")
+        return 0
+
+    if not args.repo:
+        raise GraphError("pass --repo to export, or --check to inspect a file")
+
+    document = export_graph(
+        args.repo,
+        branch_names=_split_columns(args.branches),
+        traversal=args.traversal or "chrono",
+        with_stats=not args.no_stats,
+        limit=args.limit,
+        stamp=args.stamp,
+    )
+    target = Path(args.out)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # Indented: a history is meant to be committable and readable in a diff.
+    target.write_text(json.dumps(document, indent=1) + "\n", encoding="utf-8")
+
+    facts = graph_facts(document)
+    print(f"exported {facts['commits']} commits from {args.repo}")
+    print(f"  branches   {', '.join(facts['branches'])}")
+    print(f"  merges     {facts['merges']}  authors {facts['authors']}")
+    print(f"  stats      {'yes' if facts['has_stats'] else 'no'}")
+    print(f"  -> {target}  ({target.stat().st_size / 1024:.1f} KiB)")
+    for problem in validate_graph(document):
+        print(f"  note: {problem}")
+    return 0
+
+
 def cmd_new(args) -> int:
     """Create a piece: a folder with a manifest and the directories it owns."""
     folder = Path(args.folder)
@@ -487,6 +591,8 @@ def cmd_new(args) -> int:
         source = {"kind": "csv", "path": _relative_to(args.input, folder)}
     elif args.repo:
         source = {"kind": "git", "path": _relative_to(args.repo, folder), "metric": "hash"}
+    elif args.graph:
+        source = {"kind": "graph", "path": _relative_to(args.graph, folder), "metric": "hash"}
     if args.tempo:
         source["tempo"] = Tempo.parse(args.tempo).to_json()
 
@@ -648,6 +754,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="a git repository as the source instead of a CSV (section 6.3)",
     )
     render.add_argument(
+        "--graph",
+        "-g",
+        help="an exported history JSON as the source (see `serrin graph`)",
+    )
+    render.add_argument(
         "--metric",
         choices=sorted(METRICS),
         help="what a commit contributes: hash (default), interval, churn, parents, hour...",
@@ -722,6 +833,7 @@ def build_parser() -> argparse.ArgumentParser:
     inspect = sub.add_parser("inspect", help="look at a CSV without rendering")
     inspect.add_argument("--input", "-i", help="source CSV")
     inspect.add_argument("--repo", "-r", help="a git repository instead")
+    inspect.add_argument("--graph", "-g", help="an exported history JSON instead")
     inspect.add_argument("--metric", choices=sorted(METRICS))
     inspect.add_argument("--traversal", choices=list(TRAVERSALS))
     inspect.add_argument("--branches")
@@ -760,12 +872,30 @@ def build_parser() -> argparse.ArgumentParser:
     curve.add_argument("--out", help="write the baked curve to JSON")
     curve.set_defaults(func=cmd_curve)
 
+    graph = sub.add_parser(
+        "graph", help="export a repository's history to JSON, or check a file"
+    )
+    graph.add_argument("--repo", "-r", help="repository to export")
+    graph.add_argument("--out", "-o", default="history.json")
+    graph.add_argument("--branches")
+    graph.add_argument("--traversal", choices=list(TRAVERSALS))
+    graph.add_argument("--limit", type=int)
+    graph.add_argument(
+        "--no-stats",
+        action="store_true",
+        help="skip the --numstat pass; churn and friends will read flat",
+    )
+    graph.add_argument("--stamp")
+    graph.add_argument("--check", help="inspect and validate an existing history file")
+    graph.set_defaults(func=cmd_graph)
+
     fresh = sub.add_parser("new", help="create a piece folder")
     fresh.add_argument("folder", help="where to create it")
     fresh.add_argument("--name")
     fresh.add_argument("--title")
     fresh.add_argument("--input", "-i", help="source CSV")
     fresh.add_argument("--repo", "-r", help="source git repository")
+    fresh.add_argument("--graph", "-g", help="source history JSON")
     fresh.add_argument("--chain", "-c", help="preset to start from")
     fresh.add_argument("--tempo")
     fresh.add_argument("--stamp")
@@ -804,6 +934,7 @@ def main(argv: list[str] | None = None) -> int:
         return args.func(args)
     except (
         GitError,
+        GraphError,
         IngestError,
         PieceError,
         SessionError,

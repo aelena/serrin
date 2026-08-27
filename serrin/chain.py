@@ -139,12 +139,20 @@ class Chain:
         if self.seed_override is not None:
             return int(self.seed_override) & ((1 << 64) - 1)
         if self.seed_mode == "auto" and source is not None:
-            if Path(source).is_dir():
+            candidate = Path(source)
+            if candidate.is_dir():
                 # Imported here: chain.py is on the import path of everything,
                 # and the git adapter shells out to git.
                 from .ingest_git import auto_seed_repo
 
                 return auto_seed_repo(source)
+            if candidate.suffix.lower() == ".json":
+                # An exported history seeds from the same commit ids the live
+                # repository would, so a piece rendered either way lands on the
+                # same seed.
+                from .graph import auto_seed_graph
+
+                return auto_seed_graph(source)
             return auto_seed(source)
         return seed_from_bytes(self.name.encode("utf-8"))
 

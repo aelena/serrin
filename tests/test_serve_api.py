@@ -408,7 +408,7 @@ class TestCatalogEndpoint(unittest.TestCase):
         json.dumps(self.catalog)
 
 
-class TestColumnsEndpoint(unittest.TestCase):
+class TestSourceEndpoint(unittest.TestCase):
     """What a source offers, without rendering it."""
 
     def setUp(self):
@@ -432,7 +432,7 @@ class TestColumnsEndpoint(unittest.TestCase):
     def test_it_reports_why_each_column_was_dropped(self):
         # Serrin does not clean data, so the author has to be told what is wrong
         # with a column rather than left wondering where their voice went.
-        payload = serve.columns_api(str(self.csv), None)
+        payload = serve.source_api(path=str(self.csv))
         reasons = {c["name"]: c["reason"] for c in payload["columns"]}
         self.assertEqual(reasons["cpu"], "")
         self.assertIn("constant", reasons["flat"])
@@ -440,7 +440,7 @@ class TestColumnsEndpoint(unittest.TestCase):
         self.assertIn("not numeric", reasons["label"])
 
     def test_it_marks_what_automatic_selection_would_choose(self):
-        payload = serve.columns_api(str(self.csv), None)
+        payload = serve.source_api(path=str(self.csv))
         chosen = [c["name"] for c in payload["columns"] if c["chosen"]]
         self.assertEqual(chosen, ["cpu"])
         self.assertEqual(payload["auto_chosen"], ["cpu"])
@@ -453,30 +453,33 @@ class TestColumnsEndpoint(unittest.TestCase):
             chr(10).join(["v,tag"] + [f"{i % 9},row{i}" for i in range(40)]),
             encoding="utf-8",
         )
-        reasons = {c["name"]: c["reason"] for c in serve.columns_api(str(other), None)["columns"]}
+        reasons = {c["name"]: c["reason"] for c in serve.source_api(path=str(other))["columns"]}
         self.assertNotIn("not numeric", reasons["tag"])
         self.assertIn("monotonic", reasons["tag"])
 
     def test_it_reports_the_range_of_each_column(self):
-        payload = serve.columns_api(str(self.csv), None)
+        payload = serve.source_api(path=str(self.csv))
         cpu = next(c for c in payload["columns"] if c["name"] == "cpu")
         self.assertIsNotNone(cpu["low"])
         self.assertLess(cpu["low"], cpu["high"])
 
     def test_it_counts_the_rows(self):
-        self.assertEqual(serve.columns_api(str(self.csv), None)["rows"], 60)
+        self.assertEqual(serve.source_api(path=str(self.csv))["rows"], 60)
 
-    def test_a_missing_source_is_a_404_not_a_500(self):
-        with self.assertRaises(FileNotFoundError):
-            serve.columns_api(str(self.workspace / "nope.csv"), None)
+    def test_a_missing_source_reports_rather_than_raises(self):
+        # It is the normal case while typing a path, not an exceptional one -- the
+        # studio asks on every keystroke-ish change and needs an answer, not a 404.
+        payload = serve.source_api(path=str(self.workspace / "nope.csv"))
+        self.assertFalse(payload["exists"])
+        self.assertTrue(payload["problems"])
 
     def test_it_needs_something_to_read(self):
         with self.assertRaises(ValueError):
-            serve.columns_api(None, None)
+            serve.source_api()
 
     @unittest.skipUnless(shutil.which("git"), "git is not on PATH")
     def test_a_repository_reports_its_branches(self):
-        payload = serve.columns_api(str(ROOT), None)
+        payload = serve.source_api(path=str(ROOT))
         self.assertEqual(payload["kind"], "git")
         self.assertTrue(payload["branches"])
         self.assertIn("main", [b["name"] for b in payload["branches"]])

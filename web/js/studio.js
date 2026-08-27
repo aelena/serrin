@@ -66,7 +66,7 @@ export class Studio {
     this.pieces = [];
     this.folder = null;
     this.manifest = null;
-    this.columns = null;
+    this.source = null;
     this.dirty = false;
     this.busy = false;
     //: The author's own key labels, so the editor shows their keyboard while
@@ -188,23 +188,86 @@ export class Studio {
       this.manifest = payload.manifest;
       this.detail = payload;
       this.dirty = false;
-      this.columns = null;
+      this.source = null;
       this.paint();
-      await this.loadColumns();
+      await this.loadSource();
     } catch (error) {
       this.message(error.message, true);
     }
   }
 
-  /** What the source offers, so the column picker is real rather than typed. */
-  async loadColumns() {
-    if (!this.folder) return;
+  /**
+   * Ask about the source *currently in the form*, not the one on disk.
+   *
+   * The old version passed only the piece folder, so the server loaded the saved
+   * manifest and answered about its old path -- which is why typing a new path
+   * never refreshed the column list. A working copy is unsaved by definition.
+   */
+  async loadSource() {
+    if (!this.manifest) return;
+    const path = this.get('source.path');
+    if (!path) {
+      this.source = null;
+      this.paint();
+      return;
+    }
+    const query = new URLSearchParams({ path, kind: this.get('source.kind', 'csv') });
+    if (this.folder) query.set('piece', this.folder);
+    this.source = { loading: true };
     try {
-      this.columns = await this._get(`/api/columns?piece=${encodeURIComponent(this.folder)}`);
+      this.source = await this._get(`/api/source?${query}`);
     } catch (error) {
-      this.columns = { error: error.message };
+      this.source = { error: error.message };
     }
     this.paint();
+  }
+
+  /** Upload a file into the piece folder and point the source at it. */
+  async putData(file) {
+    if (!this.folder) return;
+    try {
+      const text = await file.text();
+      const result = await this._post('/api/piece/data', {
+        piece: this.folder,
+        filename: file.name,
+        text,
+      });
+      this.set('source.kind', result.kind);
+      this.set('source.path', result.path);
+      this.source = result.source ?? null;
+      this.paint();
+      this.message(
+        `${file.name} copied into the piece as ${result.path} ` +
+          `(${(result.bytes / 1024).toFixed(1)} KiB)`,
+      );
+    } catch (error) {
+      // Rejected before it was written: a piece never ends up pointing at a file
+      // that cannot be read.
+      this.message(`not accepted — ${error.message}`, true);
+    }
+  }
+
+  /** Read a repository once and keep a portable copy of its history. */
+  async exportHistory() {
+    const repo = prompt('Path to the repository to export:', this.get('source.path') || '');
+    if (!repo) return;
+    this.message(`reading ${repo}…`);
+    try {
+      const result = await this._post('/api/piece/graph', {
+        piece: this.folder,
+        repo,
+        stamp: new Date().toISOString(),
+      });
+      this.set('source.kind', 'graph');
+      this.set('source.path', result.path);
+      await this.loadSource();
+      this.message(
+        `exported ${result.graph.commits} commits into ${result.path} — ` +
+          'the history now travels with the piece',
+      );
+    } catch (error) {
+      this.message(error.message, true);
+    }
   }
 
   async createPiece() {
@@ -465,72 +528,114 @@ export class Studio {
 
   _source() {
     const kind = this.get('source.kind', 'csv');
-    const rows = [
-      this._select('kind', 'source.kind', ['csv', 'git']),
-      this._field(
-        kind === 'git' ? 'repository path' : 'CSV path (relative to the piece folder)',
-        'source.path',
-      ),
-    ];
+    const rows = [this._select('kind', 'source.kind', ['csv', 'git', 'graph'])];
 
-    if (kind === 'git') {
+    if (kind === 'csv') {
       rows.push(
-        this._select('metric', 'source.metric', Object.keys(this.catalog.git.metrics)),
-        this._select('traversal', 'source.traversal', this.catalog.git.traversals),
-      );
-      const branches = this.columns?.branches ?? [];
-      if (branches.length) {
-        rows.push(
-          `<p class="dim">branches: ${branches.map((b) => esc(b.name)).join(', ')}</p>`,
-        );
-      }
-      rows.push(
-        `<p class="dim">${esc(
-          this.catalog.git.metrics[this.get('source.metric', 'hash')] ?? '',
-        )}</p>`,
-      );
-    } else {
-      rows.push(
+        `<div class="row">
+           <button data-action="pick-csv">choose a CSV…</button>
+           <input id="studio-file" type="file" accept=".csv,.tsv,.json,text/csv" hidden />
+         </div>
+         <p class="dim">choosing a file copies it into the piece folder, because a
+         browser hands over contents and not a path — and because data that
+         travels with the piece is the better default. For a file too large to
+         want two copies of, type its path instead.</p>`,
+        this._field('path (relative to the piece, or absolute)', 'source.path'),
         this._field('rows per frame (granularity)', 'source.granularity', 'number', 'min="1"'),
         this._select('aggregation', 'source.aggregation', this.catalog.aggregations),
         this._field('bit depth', 'source.bit_depth', 'number', 'min="1" max="16"'),
         this._field('read at most N rows (blank = all)', 'source.limit', 'number', 'min="1"'),
-        this._columnPicker(),
+      );
+    } else if (kind === 'git') {
+      rows.push(
+        this._field('repository path on this machine', 'source.path'),
+        `<p class="dim">a live clone: read every time the piece renders, and only
+         on a machine that has it. <b>export its history</b> keeps a portable copy
+         in the piece instead.</p>
+         <div class="row">
+           <button data-action="export-history">export its history…</button>
+         </div>`,
+      );
+    } else {
+      rows.push(
+        `<div class="row">
+           <button data-action="pick-graph">choose a history JSON…</button>
+           <button data-action="export-history">export from a repository…</button>
+           <input id="studio-file" type="file" accept=".json,application/json" hidden />
+         </div>
+         <p class="dim">an exported commit history. Travels with the piece, so an
+         album opens on a machine that has never cloned the repository. Make one
+         with <code>serrin graph --repo …</code> or the button above.</p>`,
+        this._field('path (relative to the piece, or absolute)', 'source.path'),
       );
     }
-    return this._section('source', rows.join(''),
-      'Serrin does not clean data. A column that is constant, monotonic or ' +
-      'unparseable is reported here and has to be fixed upstream.');
+
+    if (kind !== 'csv') {
+      rows.push(
+        this._select('metric', 'source.metric', Object.keys(this.catalog.git.metrics)),
+        this._select('traversal', 'source.traversal', ['', ...this.catalog.git.traversals]),
+        `<p class="dim">${esc(
+          this.catalog.git.metrics[this.get('source.metric', 'hash')] ?? '',
+        )}</p>`,
+      );
+    }
+
+    rows.push(this._sourceReport(kind));
+
+    return this._section(
+      'source',
+      rows.join(''),
+      'Serrin does not clean data. Whatever is wrong with a source is named ' +
+      'here and has to be fixed upstream.',
+    );
   }
 
-  _columnPicker() {
-    if (!this.columns) return '<p class="dim">reading the source…</p>';
-    if (this.columns.error) {
-      return `<p class="dim warn">cannot read the source: ${esc(this.columns.error)}</p>`;
+  /** What the server found, and what it objected to. */
+  _sourceReport(kind) {
+    const source = this.source;
+    if (!source) return '<p class="dim">no source set yet.</p>';
+    if (source.loading) return '<p class="dim">reading the source…</p>';
+    if (source.error) {
+      return `<p class="warn">cannot read the source: ${esc(source.error)}</p>`;
     }
-    const chosen = this.get('source.columns', null);
-    const max = this.catalog.max_voices;
 
-    const rows = (this.columns.columns ?? [])
-      .map((column) => {
-        // With no explicit selection the pipeline picks automatically, so the
-        // boxes show what *would* happen rather than an empty list.
-        const on = chosen ? chosen.includes(column.name) : column.chosen;
-        const disabled = column.reason ? ' disabled' : '';
-        const range =
-          column.low === null ? '' : `${column.low.toPrecision(4)} … ${column.high.toPrecision(4)}`;
-        return `<tr class="${column.reason ? 'dropped' : ''}">
-          <td><input type="checkbox" data-column="${esc(column.name)}"${on ? ' checked' : ''}${disabled} /></td>
-          <td class="name">${esc(column.name)}</td>
-          <td class="dim">${esc(range)}</td>
-          <td class="dim">${esc(column.reason)}</td></tr>`;
-      })
+    const problems = (source.problems ?? [])
+      .map((problem) => `<li>${esc(problem)}</li>`)
       .join('');
+    const complaints = problems
+      ? `<ul class="problems">${problems}</ul>`
+      : '<p class="dim">no problems.</p>';
 
-    return `<p class="dim">${this.columns.rows} rows · at most ${max} voices ·
-      ${chosen ? 'chosen by hand' : 'chosen automatically'}</p>
-      <table class="stable"><tbody>${rows}</tbody></table>
-      <div class="row"><button data-action="columns-auto">choose automatically</button></div>`;
+    if (kind === 'csv') return complaints + this._columnPicker();
+    if (kind === 'graph') return complaints + this._graphReport();
+
+    const branches = (source.branches ?? [])
+      .map((branch) => esc(branch.name))
+      .join(', ');
+    return (
+      complaints +
+      (branches
+        ? `<p class="dim">branches: ${branches} — each becomes a voice, up to
+           ${this.catalog.max_voices}.</p>`
+        : '')
+    );
+  }
+
+  _graphReport() {
+    const facts = this.source?.graph;
+    if (!facts) return '';
+    const owned = Object.entries(facts.owned ?? {})
+      .map(([ref, count]) => `<tr><td class="name">${esc(ref)}</td><td>${count} commits</td></tr>`)
+      .join('');
+    return (
+      `<p class="dim">${facts.commits} commits · ${facts.merges} merges ·
+        ${facts.authors} authors · traversal ${esc(facts.traversal)} ·
+        ${facts.has_stats ? 'with' : 'without'} per-commit stats` +
+      (facts.span_seconds
+        ? ` · spans ${(facts.span_seconds / 86400).toFixed(1)} days`
+        : '') +
+      `</p><table class="stable"><tbody>${owned}</tbody></table>`
+    );
   }
 
   _tempo() {
@@ -882,8 +987,13 @@ export class Studio {
         else value = input.value;
         this.set(path, value);
         // Structural fields change which inputs exist at all.
-        if (path === 'source.kind' || path === 'preset.envelope.kind') this.paint();
-        if (path === 'source.path') this.loadColumns();
+        if (path === 'source.kind') {
+          this.paint();
+          this.loadSource();
+        } else if (path === 'preset.envelope.kind') {
+          this.paint();
+        }
+        if (path === 'source.path') this.loadSource();
       };
       input.addEventListener('change', handler);
     }
@@ -957,6 +1067,24 @@ export class Studio {
         this.paint();
       });
     }
+
+    for (const [action, accept] of [['pick-csv', '.csv,.tsv'], ['pick-graph', '.json']]) {
+      body.querySelector(`[data-action="${action}"]`)?.addEventListener('click', () => {
+        const input = $('studio-file');
+        input.accept = accept;
+        input.click();
+      });
+    }
+
+    $('studio-file')?.addEventListener('change', async (event) => {
+      const file = event.target.files?.[0];
+      event.target.value = '';
+      if (file) await this.putData(file);
+    });
+
+    body.querySelector('[data-action="export-history"]')?.addEventListener('click', () =>
+      this.exportHistory(),
+    );
 
     body.querySelector('[data-action="add-pedal"]')?.addEventListener('click', () => {
       this.chainSlots.push({ pedal: $('studio-add-pedal').value, params: {} });

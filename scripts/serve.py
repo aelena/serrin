@@ -136,8 +136,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             "/api/pieces": lambda: {"pieces": list_pieces_api(params.get("folder", [None])[0])},
             "/api/piece": lambda: open_piece_api(params.get("folder", [None])[0]),
             "/api/catalog": catalog_api,
-            "/api/columns": lambda: columns_api(
-                params.get("path", [None])[0], params.get("piece", [None])[0]
+            "/api/source": lambda: source_api(
+                piece_folder=params.get("piece", [None])[0],
+                path=params.get("path", [None])[0],
+                kind=params.get("kind", [None])[0],
             ),
         }
         self._dispatch(handlers.get(route))
@@ -148,6 +150,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             "/api/render": lambda: render_upload(self._read_json()),
             "/api/piece": lambda: save_piece_api(self._read_json()),
             "/api/piece/new": lambda: new_piece_api(self._read_json()),
+            "/api/piece/data": lambda: put_data_api(self._read_json()),
+            "/api/piece/graph": lambda: export_graph_api(self._read_json()),
         }
         self._dispatch(handlers.get(route))
 
@@ -173,14 +177,63 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 # ---------------------------------------------------------------------------
 # the catalog: what the studio builds its forms from
 # ---------------------------------------------------------------------------
-def columns_api(path: str | None, piece_folder: str | None) -> dict:
-    """What a source offers, without rendering it.
+def source_api(
+    piece_folder: str | None = None,
+    path: str | None = None,
+    kind: str | None = None,
+) -> dict:
+    """What a source offers, and everything wrong with it, without rendering.
 
-    The studio needs this to populate a column picker, and rendering the whole
-    file to find out would be absurd. It is also the honest place to show the
-    author *why* a column was dropped -- constant, monotonic, or unparseable --
-    since Serrin does not clean data and the author has to fix it upstream.
+    Two things this fixes about the endpoint it replaces.
+
+    **It reads the path it is given.** The old one loaded the piece from disk and
+    used its *saved* source path, so typing a new path in the studio re-read the
+    old file and the column list never changed. A working copy is unsaved by
+    definition; asking about it has to mean asking about what is on screen.
+
+    **It reports problems, not just columns.** Serrin does not clean data, so the
+    only useful thing it can do about a bad source is name the problem precisely
+    enough to be fixed upstream -- per column for a CSV, per document for a
+    history file, per repository for a clone.
     """
+    from serrin.piece import Piece  # noqa: PLC0415
+
+    piece = Piece.load(_piece_folder(piece_folder)) if piece_folder else None
+
+    # The given path wins over the saved one: that is the whole point.
+    if path:
+        source = piece.resolve(path) if piece else Path(path).expanduser()
+    elif piece:
+        source = piece.source_path
+    else:
+        raise ValueError("pass a path, a piece folder, or both")
+
+    if not kind:
+        kind = piece.kind if piece else _guess_kind(source)
+
+    if not source.exists():
+        return {
+            "kind": kind,
+            "path": str(source),
+            "exists": False,
+            "problems": [f"nothing at {source}"],
+        }
+
+    if kind == "graph":
+        return _graph_source(source)
+    if kind == "git":
+        return _git_source(source)
+    return _csv_source(source)
+
+
+def _guess_kind(source: Path) -> str:
+    """Infer the kind from what is actually there, for a bare `?path=`."""
+    if source.is_dir():
+        return "git" if (source / ".git").exists() else "csv"
+    return "graph" if source.suffix.lower() == ".json" else "csv"
+
+
+def _csv_source(source: Path) -> dict:
     from serrin.ingest import (  # noqa: PLC0415
         _parse_number,
         monotonicity,
@@ -188,34 +241,19 @@ def columns_api(path: str | None, piece_folder: str | None) -> dict:
         read_rows,
         select_columns,
     )
-    from serrin.ingest_git import branches  # noqa: PLC0415
-    from serrin.piece import Piece  # noqa: PLC0415
 
-    if piece_folder:
-        piece = Piece.load(_piece_folder(piece_folder))
-        source = piece.source_path
-        kind = piece.kind
-    elif path:
-        source = Path(path).expanduser()
-        kind = "git" if (source / ".git").exists() else "csv"
-    else:
-        raise ValueError("pass a path or a piece folder")
+    problems: list[str] = []
+    try:
+        header, rows = read_rows(source)
+    except Exception as exc:  # noqa: BLE001
+        return {"kind": "csv", "path": str(source), "exists": True, "problems": [str(exc)]}
 
-    if not source.exists():
-        raise FileNotFoundError(f"no such source: {source}")
-
-    if kind == "git":
-        return {
-            "kind": "git",
-            "path": str(source),
-            "branches": [
-                {"name": name, "tip": stamp} for name, stamp in branches(source)
-            ],
-        }
-
-    header, rows = read_rows(source)
     numeric = set(numeric_columns(header, rows))
-    chosen = set(select_columns(header, rows, None))
+    try:
+        chosen = set(select_columns(header, rows, None))
+    except Exception as exc:  # noqa: BLE001
+        chosen = set()
+        problems.append(str(exc))
 
     columns = []
     for index, name in enumerate(header):
@@ -235,9 +273,9 @@ def columns_api(path: str | None, piece_folder: str | None) -> dict:
         elif len(values) < 2:
             reason = "too few values"
         elif max(values) == min(values):
-            reason = "constant — a flat line is not a voice"
+            reason = "constant - a flat line is not a voice"
         elif monotonicity(values) > 0.98:
-            reason = "monotonic — variance but no shape, like a timestamp"
+            reason = "monotonic - variance but no shape, like a timestamp"
         columns.append(
             {
                 "index": index,
@@ -250,12 +288,177 @@ def columns_api(path: str | None, piece_folder: str | None) -> dict:
             }
         )
 
+    if len(rows) < 2:
+        problems.append(f"only {len(rows)} data row(s): there is no shape to read")
+    if not chosen:
+        problems.append(
+            "no column survives automatic selection - every one is constant, "
+            "monotonic or unparseable. Serrin does not clean data; fix it upstream "
+            "or name columns explicitly."
+        )
+
     return {
         "kind": "csv",
         "path": str(source),
+        "exists": True,
         "rows": len(rows),
         "columns": columns,
         "auto_chosen": [header[i] for i in sorted(chosen)],
+        "problems": problems,
+    }
+
+
+def _git_source(source: Path) -> dict:
+    from serrin.ingest_git import GitError, branches  # noqa: PLC0415
+
+    if not (source / ".git").exists() and not (source / "HEAD").exists():
+        return {
+            "kind": "git",
+            "path": str(source),
+            "exists": True,
+            "problems": [f"{source} is not a git repository (no .git)"],
+        }
+    try:
+        found = branches(source)
+    except GitError as exc:
+        return {"kind": "git", "path": str(source), "exists": True, "problems": [str(exc)]}
+
+    problems = []
+    if len(found) > 8:
+        problems.append(
+            f"{len(found)} branches but the voice ceiling is 8 - the most recently "
+            "touched will be kept"
+        )
+    return {
+        "kind": "git",
+        "path": str(source),
+        "exists": True,
+        "branches": [{"name": name, "tip": tip} for name, tip in found],
+        "problems": problems,
+    }
+
+
+def _graph_source(source: Path) -> dict:
+    from serrin.graph import (  # noqa: PLC0415
+        GraphError,
+        graph_facts,
+        load_graph,
+        validate_graph,
+    )
+
+    try:
+        document = load_graph(source)
+    except GraphError as exc:
+        return {"kind": "graph", "path": str(source), "exists": True, "problems": [str(exc)]}
+
+    facts = graph_facts(document)
+    return {
+        "kind": "graph",
+        "path": str(source),
+        "exists": True,
+        "graph": facts,
+        "branches": [{"name": name, "tip": 0} for name in facts["branches"]],
+        "problems": validate_graph(document),
+    }
+
+
+def export_graph_api(payload: dict) -> dict:
+    """Read a repository and leave its history in a piece folder.
+
+    The bridge between the two graph sources: point at a clone once, and the
+    piece keeps a portable copy that travels with the folder. Without this the
+    graph format would only be reachable from the CLI, which makes it a format
+    the studio can read and not write.
+    """
+    from serrin.graph import export_graph, graph_facts, validate_graph  # noqa: PLC0415
+
+    folder = _piece_folder(payload.get("piece"))
+    repo = Path(str(payload.get("repo") or "")).expanduser()
+    if not repo.exists():
+        raise ValueError(f"no such repository: {repo}")
+
+    document = export_graph(
+        repo,
+        traversal=payload.get("traversal") or "chrono",
+        with_stats=payload.get("with_stats", True),
+        limit=payload.get("limit"),
+        stamp=payload.get("stamp"),
+    )
+    name = f"{_slug(repo.resolve().name, 'history')}.history.json"
+    target = folder / name
+    target.write_text(json.dumps(document, indent=1) + "\n", encoding="utf-8")
+
+    facts = graph_facts(document)
+    print(f"  exported {facts['commits']} commits from {repo.name} into {folder.name}")
+    return {
+        "ok": True,
+        "path": name,
+        "kind": "graph",
+        "graph": facts,
+        "problems": validate_graph(document),
+    }
+
+
+# ---------------------------------------------------------------------------
+# uploads into a piece
+# ---------------------------------------------------------------------------
+#: What a piece will accept as a data file, and where it lands.
+DATA_SUFFIXES = {".csv": "csv", ".tsv": "csv", ".json": "graph"}
+
+
+def put_data_api(payload: dict) -> dict:
+    """Write a CSV or a history file into a piece folder.
+
+    A browser cannot hand over a filesystem path -- a file input gives contents,
+    not a location -- so "choose a file" necessarily means "copy it in". That is
+    also the better default for a piece: the data travels with the folder.
+
+    Pointing at a path elsewhere on the machine stays available as a text field,
+    for a file too large to want two copies of.
+    """
+    folder = _piece_folder(payload.get("piece"))
+    raw_name = str(payload.get("filename") or "data.csv")
+    text = payload.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("no file contents in the request")
+
+    suffix = Path(raw_name).suffix.lower()
+    if suffix not in DATA_SUFFIXES:
+        raise ValueError(
+            f"{suffix or 'that'} is not a data file Serrin reads; "
+            f"expected one of {', '.join(sorted(DATA_SUFFIXES))}"
+        )
+    kind = DATA_SUFFIXES[suffix]
+
+    # Validated before it is written, so a piece never ends up pointing at a file
+    # that cannot be read. A rejected upload is better than a broken source.
+    if kind == "graph":
+        from serrin.graph import validate_graph  # noqa: PLC0415
+
+        try:
+            document = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"not valid JSON: {exc}") from exc
+        fatal = [
+            problem
+            for problem in validate_graph(document)
+            if "no commits" in problem or "timestamp" in problem or "not a JSON" in problem
+        ]
+        if fatal:
+            raise ValueError("; ".join(fatal))
+
+    name = _slug(Path(raw_name).stem) + suffix
+    target = folder / name
+    target.write_text(text, encoding="utf-8")
+    print(f"  wrote {kind} into {folder.name}: {name} ({len(text) / 1024:.1f} KiB)")
+
+    return {
+        "ok": True,
+        # Relative, so the piece folder stays portable.
+        "path": name,
+        "kind": kind,
+        "bytes": len(text.encode("utf-8")),
+        "source": source_api(piece_folder=payload.get("piece"), path=name, kind=kind),
     }
 
 
@@ -454,6 +657,7 @@ def render_upload(payload: dict) -> dict:
     from serrin.envelope import Envelope
     from serrin.export import MappingConfig, build_render, trace_mapping, write_json
     from serrin.ingest import ingest_csv
+    from serrin.graph import ingest_graph
     from serrin.ingest_git import ingest_repo
     from serrin.session import Session
     from serrin.tempo import Tempo
@@ -504,7 +708,17 @@ def render_upload(payload: dict) -> dict:
         overrides = piece.ingest_kwargs()
         if tempo is not None:
             overrides["tempo"] = tempo
-        if kind == "git":
+        if kind == "graph":
+            stream = ingest_graph(source, **overrides)
+            if recorder is not None:
+                recorder.add(
+                    "ingest",
+                    f"read {source.name} (history file)",
+                    stream,
+                    params={"metric": stream.meta["git"]["metric"]},
+                    detail=dict(stream.meta["git"]),
+                )
+        elif kind == "git":
             stream = ingest_repo(source, **overrides)
             if recorder is not None:
                 recorder.add(

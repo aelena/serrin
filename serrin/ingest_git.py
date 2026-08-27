@@ -374,13 +374,56 @@ def ingest_repo(
     need_stats = metric in {"churn", "insertions", "deletions", "files"}
     owned, timeline = assign_to_branches(repo, refs, traversal, need_stats, limit)
 
+    return build_stream(
+        owned=owned,
+        timeline=timeline,
+        refs=refs,
+        metric=metric,
+        traversal=traversal,
+        bit_depth=bit_depth,
+        tempo=tempo,
+        rate=rate,
+        log_scale=log_scale,
+        source=str(repo),
+        extra={"trunk": trunk_of(refs, owned)},
+    )
+
+
+def build_stream(
+    owned: dict[str, list[Commit]],
+    timeline: list[Commit],
+    refs: list[str],
+    metric: str = "hash",
+    traversal: str = "chrono",
+    bit_depth: int = 8,
+    tempo: Tempo | str | dict | None = None,
+    rate: float | None = None,
+    log_scale: bool | None = None,
+    source: str = "",
+    extra: dict | None = None,
+) -> Stream:
+    """Turn owned commits into voices on one shared timeline.
+
+    Shared by the live repository adapter and the portable JSON one, because the
+    metric mapping, the hold-forward and the quantization all have to agree: a
+    piece rendered from a repo and the same piece rendered from its exported
+    history must produce the same stream, and two implementations would drift.
+
+    Every branch takes a new value at each of *its own* commits and **holds** in
+    between -- which is what turns a quiet branch into a quiet voice: a held
+    value has zero delta, and `delta` is the pedal that reads change. Silence
+    falls out of the data rather than being imposed on it.
+    """
+    if metric not in METRICS:
+        raise GitError(f"unknown metric {metric!r}; have {', '.join(sorted(METRICS))}")
+
     # Branches owning nothing are dropped, and named. A fully merged branch, or
     # one that is an ancestor of another, has no commits of its own -- every
     # commit it could contribute is already in some other voice, so giving it a
     # voice would only duplicate one. Dropping is right; doing it silently is
     # not, because "my branch is missing" is otherwise a mystery.
-    voices = [ref for ref in refs if owned[ref]]
-    dropped = [ref for ref in refs if not owned[ref]]
+    voices = [ref for ref in refs if owned.get(ref)]
+    dropped = [ref for ref in refs if not owned.get(ref)]
     if not voices:
         raise GitError(
             "no branch owns any commits -- every branch is contained in another. "
@@ -398,7 +441,7 @@ def ingest_repo(
 
     channels: list[list[int]] = []
     for ref in voices:
-        raw = [None] * frames  # type: list[float | None]
+        raw: list[float | None] = [None] * frames
         previous: Commit | None = None
         for commit in sorted(owned[ref], key=lambda c: c.timestamp):
             index = position.get(commit.sha)
@@ -431,13 +474,13 @@ def ingest_repo(
             use_log = log_scale if log_scale is not None else metric in _LOG_BY_DEFAULT
             channels.append(quantize(held, bit_depth, use_log))
 
-    stream = Stream(
+    return Stream(
         names=voices,
         data=channels,
         bit_depth=bit_depth,
         tempo=grid,
         meta={
-            "source": str(repo),
+            "source": source,
             "source_kind": "git",
             "source_rows": frames,
             "columns": voices,
@@ -451,20 +494,19 @@ def ingest_repo(
                 "branches": voices,
                 "dropped_branches": dropped,
                 "considered_branches": refs,
-                "commits": frames,
                 "owned": {ref: len(owned[ref]) for ref in voices},
-                "trunk": trunk_of(refs, owned),
                 "merges": sum(1 for c in timeline if len(c.parents) > 1),
                 "authors": len({c.author for c in timeline}),
+                "commits": frames,
                 "span_seconds": (
                     max(c.timestamp for c in timeline) - min(c.timestamp for c in timeline)
                     if timeline
                     else 0
                 ),
+                **(extra or {}),
             },
         },
     )
-    return stream
 
 
 def auto_seed_repo(path: str | Path, count: int = 64) -> int:
