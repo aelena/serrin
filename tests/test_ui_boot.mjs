@@ -302,5 +302,127 @@ test('leaving the studio with nothing loaded refuses rather than showing a black
   assert.ok(app.views.inStudio, 'it went to an empty stage anyway');
 });
 
+// ---------------------------------------------------------------------------
+console.log('saying what went wrong');
+//
+// All three of these were reported as "nothing happened": choosing a file with
+// no piece open, an endpoint the running server predates, and two files selected
+// where one gets used. None of them threw, none of them logged, and none of them
+// said anything -- which is the worst way for software to fail.
+
+const FULL_CATALOG = {
+  aggregations: ['mean', 'max'],
+  endpoints: [
+    '/api/catalog', '/api/source', '/api/pieces', '/api/piece',
+    '/api/piece/new', '/api/piece/data', '/api/piece/graph', '/api/render',
+  ],
+};
+
+/** A studio whose messages are collected instead of painted. */
+function makeStudio(catalog = FULL_CATALOG) {
+  const app = makeApp();
+  app.console = new DebugConsole(app);
+  const studio = new Studio(app);
+  studio.said = [];
+  studio.message = (text, warning = false) => studio.said.push({ text, warning });
+  studio._get = async (route) => (route === '/api/catalog' ? catalog : {});
+  return studio;
+}
+
+await asyncTest('an up-to-date server draws no complaint', async () => {
+  const studio = makeStudio();
+  await studio.loadCatalog();
+  assert.equal(studio.stale, null);
+  assert.deepEqual(studio.said, []);
+});
+
+await asyncTest('a server older than the page says which endpoints it lacks', async () => {
+  // The reported symptom was a bare 404 in the browser console and nothing at
+  // all in the UI. The cause was a serve.py started before the endpoint existed,
+  // and the fix is to restart it -- so that is what it has to say.
+  const studio = makeStudio({
+    aggregations: ['mean'],
+    endpoints: ['/api/catalog', '/api/pieces', '/api/piece', '/api/render'],
+  });
+  await studio.loadCatalog();
+  assert.deepEqual(studio.stale, ['/api/source', '/api/piece/data']);
+  const [warning] = studio.said;
+  assert.ok(warning.warning, 'it was not flagged as a warning');
+  assert.ok(warning.text.includes('older than this page'), warning.text);
+  assert.ok(warning.text.includes('/api/source'), warning.text);
+  assert.ok(warning.text.includes('serve.py'), warning.text);
+});
+
+await asyncTest('a server too old to advertise anything at all is still caught', async () => {
+  const studio = makeStudio({ aggregations: ['mean'] });
+  await studio.loadCatalog();
+  assert.equal(studio.stale.length, 5);
+});
+
+await asyncTest('uploading with no piece open says so instead of returning', async () => {
+  const studio = makeStudio();
+  studio.folder = null;
+  await studio.putData({ name: 'meteo.csv' });
+  assert.equal(studio.said.length, 1);
+  assert.ok(studio.said[0].warning);
+  assert.ok(studio.said[0].text.includes('open or create a piece first'));
+});
+
+await asyncTest('exporting a history with no piece open says so too', async () => {
+  const studio = makeStudio();
+  studio.folder = null;
+  await studio.exportHistory();
+  assert.ok(studio.said[0].text.includes('open or create a piece first'));
+});
+
+// ---------------------------------------------------------------------------
+console.log('showing how the file was read');
+//
+// A metadata preamble is skipped rather than refused, because it is part of the
+// format every simulator writes. But skipping it is a judgement, and a judgement
+// made silently is indistinguishable from a bug -- so the report is shown always
+// and not only when something looks wrong.
+
+test('the report says what parsing decided', () => {
+  const studio = makeStudio();
+  studio.source = {
+    table: {
+      delimiter: ';', header_line: 42, preamble_lines: 41,
+      columns: 13, data_rows: 13, dropped_rows: 2,
+    },
+  };
+  const html = studio._tableReport();
+  assert.ok(html.includes('delimiter <b>;</b>'), html);
+  assert.ok(html.includes('line <b>42</b>'), html);
+  assert.ok(html.includes('41 preamble lines skipped'), html);
+  assert.ok(html.includes('2 lines dropped'), html);
+});
+
+test('a tab delimiter is named rather than printed invisibly', () => {
+  const studio = makeStudio();
+  studio.source = { table: { delimiter: '\t', header_line: 1, columns: 4, data_rows: 9 } };
+  assert.ok(studio._tableReport().includes('delimiter <b>tab</b>'));
+});
+
+test('an ordinary file reports nothing skipped', () => {
+  const studio = makeStudio();
+  studio.source = {
+    table: {
+      delimiter: ',', header_line: 1, preamble_lines: 0,
+      columns: 4, data_rows: 200, dropped_rows: 0,
+    },
+  };
+  const html = studio._tableReport();
+  assert.ok(!html.includes('skipped'), html);
+  assert.ok(!html.includes('dropped'), html);
+  assert.ok(html.includes('200 rows'), html);
+});
+
+test('no source, no report', () => {
+  const studio = makeStudio();
+  studio.source = null;
+  assert.equal(studio._tableReport(), '');
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

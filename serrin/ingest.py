@@ -35,36 +35,193 @@ class IngestError(ValueError):
 # ---------------------------------------------------------------------------
 # reading
 # ---------------------------------------------------------------------------
+#: Lines that are commentary rather than data. `#` is near-universal; the others
+#: turn up in instrument and simulator exports.
+_COMMENT_PREFIXES = ("#", "//", ";;", "!")
+
+#: How far into a file to look for the real header before giving up.
+_HEADER_SEARCH_LINES = 200
+
+#: How many agreeing rows are enough to call something the table.
+#:
+#: Not a detail. Measuring each candidate's run all the way to the end of the
+#: file meant up to 200 start lines x 4 delimiters x every remaining line --
+#: which turned a 140k-row export into a 39-second parse. Fifty agreeing rows
+#: already beat any preamble line (one or two fields) or footer line (one), so
+#: counting further buys nothing.
+_ENOUGH_AGREEMENT = 50
+
+
+def _split(line: str, delimiter: str) -> list[str]:
+    return next(iter(csv.reader([line], delimiter=delimiter)), [])
+
+
+def find_table(
+    lines: list[str], delimiter: str | None = None
+) -> tuple[str, int, int]:
+    """Locate the delimiter, the header line and where the data starts.
+
+    Real exports do not begin with a header row. PVGIS writes eight lines of
+    tab-separated metadata and then ``time,G(i),H_sun,…``; Solargis writes
+    forty-one ``#`` comment lines and then a semicolon-separated table; both put
+    prose at the end. Assuming line one is the header turned the first into a
+    two-column file called "Latitude (decimal degrees)" and the second into one
+    column of English.
+
+    This is parsing, not cleaning. Serrin deliberately does not repair values --
+    a constant column stays constant and gets dropped, a bad number stays bad --
+    but a metadata preamble is part of the file *format*, and refusing to find
+    the table is failing to read the file rather than declining to fix it.
+
+    The header is the line that starts the longest run of rows that all split
+    into the same number of fields. That definition is what makes it robust: a
+    preamble line splits into one or two fields and a footer line into one, so
+    neither can win against a thousand rows of six.
+    """
+    candidates = [delimiter] if delimiter else [",", ";", "\t", "|"]
+    # (agreeing rows, delimiter, header index, field count)
+    best: tuple[int, str, int, int] = (0, ",", 0, 0)
+
+    for candidate in candidates:
+        index = 0
+        while index < min(len(lines), _HEADER_SEARCH_LINES):
+            line = lines[index]
+            if not line.strip() or line.lstrip().startswith(_COMMENT_PREFIXES):
+                index += 1
+                continue
+            width = len(_split(line, candidate))
+            if width < 2:
+                index += 1
+                continue
+            # How many following lines agree on the width? Blanks and comments in
+            # the middle do not break the run; a different width does.
+            run = 0
+            probe = index + 1
+            while probe < len(lines) and run < _ENOUGH_AGREEMENT:
+                following = lines[probe]
+                if not following.strip() or following.lstrip().startswith(_COMMENT_PREFIXES):
+                    probe += 1
+                    continue
+                if len(_split(following, candidate)) != width:
+                    break
+                run += 1
+                probe += 1
+            # Ties broken by field count: a preamble of tab-separated key/value
+            # pairs and a real comma table can both reach the cap, and the wider
+            # one is the table.
+            if (run, width) > (best[0], best[3] if len(best) > 3 else 0):
+                best = (run, candidate, index, width)
+            index += 1
+
+    run, chosen, header_index, _ = best
+    if run == 0:
+        # Nothing looks like a table. Fall back to the first non-comment line so
+        # the caller still gets a shot, and let column selection complain.
+        for index, line in enumerate(lines):
+            if line.strip() and not line.lstrip().startswith(_COMMENT_PREFIXES):
+                return chosen, index, index + 1
+        return chosen, 0, 1
+    return chosen, header_index, header_index + 1
+
+
 def read_rows(
-    path: str | Path, delimiter: str | None = None
+    path: str | Path,
+    delimiter: str | None = None,
+    report: dict | None = None,
 ) -> tuple[list[str], list[list[str]]]:
-    """Read a CSV, sniffing the delimiter and tolerating a missing header."""
+    """Read a CSV, finding the table wherever it starts.
+
+    Returns the header and only the rows that match its width. Trailing prose --
+    which PVGIS, Solargis and most simulators append -- is dropped rather than
+    read as a one-column row that would then be held forward as data.
+
+    ``report``, if given, is filled with what parsing decided: the delimiter, the
+    header line number, how many lines were skipped before it and how many rows
+    were dropped after. Skipping a metadata preamble is a judgement, and a
+    judgement made silently is indistinguishable from a bug -- so the caller can
+    show its work and the author can see immediately if it guessed wrong.
+    """
     path = Path(path)
     text = path.read_text(encoding="utf-8-sig", errors="replace")
     if not text.strip():
         raise IngestError(f"{path} is empty")
 
-    if delimiter is None:
-        sample = "\n".join(text.splitlines()[:20])
-        try:
-            delimiter = csv.Sniffer().sniff(sample, delimiters=",;\t|").delimiter
-        except csv.Error:
-            delimiter = ","
+    lines = text.splitlines()
+    chosen, header_index, data_start = find_table(lines, delimiter)
 
-    rows = [r for r in csv.reader(text.splitlines(), delimiter=delimiter) if r]
+    header_cells = _split(lines[header_index], chosen)
+    textual = sum(1 for cell in header_cells if not _NUMERIC.fullmatch(cell.strip()))
+    if textual > len(header_cells) / 2:
+        header = [cell.strip() or f"col{i}" for i, cell in enumerate(header_cells)]
+    else:
+        # The table starts straight into numbers: no names to use.
+        header = [f"col{i}" for i in range(len(header_cells))]
+        data_start = header_index
+
+    width = len(header)
+    rows: list[list[str]] = []
+    skipped_blank = skipped_comment = dropped_width = 0
+    for line in lines[data_start:]:
+        if not line.strip():
+            skipped_blank += 1
+            continue
+        if line.lstrip().startswith(_COMMENT_PREFIXES):
+            skipped_comment += 1
+            continue
+        cells = _split(line, chosen)
+        if len(cells) != width:
+            # A footer, a stray note, or a second table. Skipped rather than
+            # padded: a short row padded with blanks becomes held-forward values
+            # that look like real, very flat data.
+            dropped_width += 1
+            continue
+        rows.append(cells)
+
+    if report is not None:
+        report.update(
+            {
+                "delimiter": chosen,
+                "header_line": header_index + 1,
+                "preamble_lines": header_index,
+                "columns": width,
+                "data_rows": len(rows),
+                "dropped_rows": dropped_width,
+                "skipped_blank": skipped_blank,
+                "skipped_comment": skipped_comment,
+                "total_lines": len(lines),
+                "named_header": not all(
+                    name.startswith("col") for name in header
+                ),
+            }
+        )
+
     if not rows:
-        raise IngestError(f"{path} has no rows")
+        raise IngestError(
+            f"{path}: found a header at line {header_index + 1} "
+            f"({width} columns, delimiter {chosen!r}) but no data rows under it"
+        )
+    return header, rows
 
-    first = rows[0]
-    textual = sum(1 for cell in first if not _NUMERIC.fullmatch(cell.strip()))
-    if textual > len(first) / 2:
-        header = [c.strip() or f"col{i}" for i, c in enumerate(first)]
-        return header, rows[1:]
-    return [f"col{i}" for i in range(len(first))], rows
+
+#: `1,234` or `1,234,567.89` -- commas grouping thousands.
+_THOUSANDS = re.compile(r"^[-+]?\d{1,3}(?:,\d{3})+(?:\.\d+)?$")
+#: `12,5` -- a comma where the rest of the world puts a decimal point.
+_DECIMAL_COMMA = re.compile(r"^[-+]?\d+,\d+$")
 
 
 def _parse_number(cell: str) -> float | None:
-    """Pull a number out of a cell, forgiving units and thousands separators."""
+    """Pull a number out of a cell, forgiving units and both comma conventions.
+
+    The comma is the trap. Stripping every comma as a thousands separator turns
+    the European ``12,5`` into ``125`` -- a tenfold error, silent, in a column
+    that still looks perfectly plausible afterwards. So the two cases are
+    distinguished by shape: commas every three digits are grouping, a single
+    comma between digits is a decimal point.
+
+    Anything else still gets the forgiving treatment -- ``45 ms`` and ``~3.2 GB``
+    read as numbers, because a units suffix is a labelling habit rather than a
+    different value.
+    """
     cell = cell.strip()
     if not cell:
         return None
@@ -72,6 +229,12 @@ def _parse_number(cell: str) -> float | None:
         return float(cell)
     except ValueError:
         pass
+
+    if _THOUSANDS.match(cell):
+        return float(cell.replace(",", ""))
+    if _DECIMAL_COMMA.match(cell):
+        return float(cell.replace(",", "."))
+
     match = _NUMERIC.search(cell.replace(",", ""))
     if match is None:
         return None
@@ -98,6 +261,33 @@ def numeric_columns(
         if total and hits / total >= 0.6:
             keep.append(idx)
     return keep
+
+
+def describe_table(path: str | Path) -> str:
+    """One paragraph on how a file was parsed, for `inspect` and the console."""
+    report: dict = {}
+    header, _ = read_rows(path, report=report)
+    delimiter = "tab" if report["delimiter"] == "\t" else report["delimiter"]
+    lines = [
+        f"read as {report['columns']} columns x {report['data_rows']} rows, "
+        f"delimiter {delimiter!r}, header on line {report['header_line']}",
+    ]
+    if report["preamble_lines"]:
+        lines.append(
+            f"  skipped {report['preamble_lines']} line(s) above it "
+            "(metadata preamble)"
+        )
+    if report["dropped_rows"]:
+        lines.append(
+            f"  dropped {report['dropped_rows']} line(s) below the table that did "
+            f"not have {report['columns']} fields (usually a footer)"
+        )
+    if report["skipped_comment"]:
+        lines.append(f"  skipped {report['skipped_comment']} comment line(s) inside it")
+    if not report["named_header"]:
+        lines.append("  no column names in the file, so they are col0, col1 ...")
+    lines.append("  columns: " + ", ".join(header))
+    return "\n".join(lines)
 
 
 def monotonicity(values: list[float]) -> float:
@@ -251,7 +441,8 @@ def ingest_csv(
     the pipeline and the one people most need to see.
     """
     grid = Tempo.parse(tempo) if tempo is not None else Tempo.from_rate(rate or 8.0)
-    header, rows = read_rows(path, delimiter)
+    table: dict = {}
+    header, rows = read_rows(path, delimiter, report=table)
     if limit:
         rows = rows[:limit]
     if not rows:
@@ -335,6 +526,9 @@ def ingest_csv(
                 "log_scale": log_scale,
             },
             detail={
+                # What parsing decided, so a render records how it found the
+                # table rather than leaving it to be re-derived by hand.
+                "table": table,
                 "rows_read": len(rows),
                 "columns_available": header,
                 "columns_chosen": names,

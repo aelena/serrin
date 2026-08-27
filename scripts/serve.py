@@ -243,10 +243,31 @@ def _csv_source(source: Path) -> dict:
     )
 
     problems: list[str] = []
+    table: dict = {}
     try:
-        header, rows = read_rows(source)
+        header, rows = read_rows(source, report=table)
     except Exception as exc:  # noqa: BLE001
         return {"kind": "csv", "path": str(source), "exists": True, "problems": [str(exc)]}
+
+    # Skipping a preamble is a judgement, and a judgement made silently is
+    # indistinguishable from a bug -- so it is reported as something the author
+    # can check rather than trusted quietly.
+    if table.get("preamble_lines"):
+        problems.append(
+            f"skipped {table['preamble_lines']} line(s) of preamble; the header "
+            f"looks like line {table['header_line']}: {', '.join(header[:6])}"
+            + (" …" if len(header) > 6 else "")
+        )
+    if table.get("dropped_rows"):
+        problems.append(
+            f"dropped {table['dropped_rows']} line(s) that did not have "
+            f"{table['columns']} fields — usually a footer"
+        )
+    if not table.get("named_header", True):
+        problems.append(
+            "the table starts straight into numbers, so the columns have no "
+            "names and are called col0, col1 …"
+        )
 
     numeric = set(numeric_columns(header, rows))
     try:
@@ -304,6 +325,7 @@ def _csv_source(source: Path) -> dict:
         "rows": len(rows),
         "columns": columns,
         "auto_chosen": [header[i] for i in sorted(chosen)],
+        "table": table,
         "problems": problems,
     }
 
@@ -511,6 +533,20 @@ def catalog_api() -> dict:
         "max_voices": MAX_VOICES,
         "binding_kinds": list(BINDING_KINDS),
         "keymap_rows": [list(row) for row in DEFAULT_KEYMAP_ROWS],
+        # What this build actually serves. The page compares it against what it
+        # needs and says so if the server is older -- otherwise a renamed or added
+        # endpoint shows up as a bare 404 in the console and nothing in the UI,
+        # which is exactly how an afternoon gets lost.
+        "endpoints": [
+            "/api/catalog",
+            "/api/source",
+            "/api/pieces",
+            "/api/piece",
+            "/api/piece/new",
+            "/api/piece/data",
+            "/api/piece/graph",
+            "/api/render",
+        ],
         "aggregations": ["mean", "max", "min", "sum", "first", "last", "range"],
         "loop_policies": ["vary", "loop", "pingpong", "once"],
         "voice_entry": ["variance", "columns", "sparse"],

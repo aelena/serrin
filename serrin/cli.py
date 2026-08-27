@@ -20,7 +20,7 @@ from . import pedals
 from .chain import Chain, default_chain
 from .envelope import ARCHETYPES, EQUATIONS, Envelope, voice_order
 from .export import MappingConfig, build_render, trace_mapping, write_json
-from .ingest import IngestError, ingest_csv
+from .ingest import IngestError, describe_table, ingest_csv
 from .graph import (
     GraphError,
     auto_seed_graph,
@@ -443,6 +443,12 @@ def cmd_inspect(args) -> int:
         print()
     elif kind == "graph":
         print(describe_graph(stream))
+        print()
+    elif kind == "csv":
+        # How the file was read, before anything about what is in it. Real
+        # exports bury the table under a metadata preamble, and finding it is a
+        # judgement -- so inspect shows the judgement rather than only its result.
+        print(describe_table(source))
         print()
     print(stream.describe())
     if kind == "git":

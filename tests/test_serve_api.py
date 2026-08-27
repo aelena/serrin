@@ -403,6 +403,20 @@ class TestCatalogEndpoint(unittest.TestCase):
         self.assertEqual(sorted(self.catalog["git"]["metrics"]), sorted(METRICS))
         self.assertTrue(all(self.catalog["git"]["metrics"].values()))
 
+    def test_it_lists_the_endpoints_this_build_serves(self):
+        # So the page can say "your server is older than this page" instead of
+        # letting a renamed endpoint show up as a bare 404 and nothing in the UI.
+        endpoints = self.catalog["endpoints"]
+        for route in ("/api/source", "/api/piece/data", "/api/render", "/api/pieces"):
+            self.assertIn(route, endpoints)
+
+    def test_every_advertised_endpoint_is_actually_routed(self):
+        # A list that drifts from the router is worse than no list: it would
+        # report a healthy server while the page still 404s.
+        handler = (ROOT / "scripts" / "serve.py").read_text(encoding="utf-8")
+        for route in self.catalog["endpoints"]:
+            self.assertIn(f'"{route}"', handler, f"{route} is advertised but not routed")
+
     def test_it_is_json_serialisable(self):
         # It goes over the wire; a stray tuple or Path would 500 at request time.
         json.dumps(self.catalog)
@@ -483,6 +497,67 @@ class TestSourceEndpoint(unittest.TestCase):
         self.assertEqual(payload["kind"], "git")
         self.assertTrue(payload["branches"])
         self.assertIn("main", [b["name"] for b in payload["branches"]])
+
+    # -- what parsing decided ----------------------------------------------
+    #
+    # A metadata preamble is skipped rather than refused, because it is part of
+    # the file format that PVGIS, Solargis and most simulators write -- but a
+    # skip made silently is indistinguishable from a bug, so the endpoint has to
+    # hand back what it decided and not only what it found.
+
+    def _real_world(self) -> Path:
+        path = self.workspace / "export.csv"
+        path.write_text(
+            chr(10).join(
+                ["# Solargis prospect", "# site: Medina del Campo", "#"]
+                + ["Month;GHIm;T24"]
+                + [f"{m};{100 + m * 7};{10 + m}" for m in range(1, 13)]
+                + ["Report generated 2024-03-12"]
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_it_reports_how_it_found_the_table(self):
+        table = serve.source_api(path=str(self._real_world()))["table"]
+        self.assertEqual(table["delimiter"], ";")
+        self.assertEqual(table["header_line"], 4)
+        self.assertEqual(table["preamble_lines"], 3)
+        self.assertEqual(table["columns"], 3)
+        self.assertEqual(table["data_rows"], 12)
+        self.assertEqual(table["dropped_rows"], 1)
+
+    def test_skipping_a_preamble_is_reported_as_a_problem_to_check(self):
+        problems = serve.source_api(path=str(self._real_world()))["problems"]
+        joined = chr(10).join(problems)
+        self.assertIn("3 line(s) of preamble", joined)
+        # Naming the header it settled on is the whole point: it is what lets the
+        # author see at a glance that the guess was right.
+        self.assertIn("line 4", joined)
+        self.assertIn("Month", joined)
+        self.assertIn("dropped 1 line(s)", joined)
+
+    def test_an_ordinary_csv_has_nothing_to_complain_about(self):
+        payload = serve.source_api(path=str(self.csv))
+        self.assertEqual(payload["table"]["preamble_lines"], 0)
+        self.assertEqual(payload["table"]["dropped_rows"], 0)
+        self.assertEqual(payload["problems"], [])
+
+    def test_nameless_columns_are_called_out(self):
+        path = self.workspace / "bare.csv"
+        path.write_text(
+            chr(10).join(f"{i % 9},{i % 7},{i % 5}" for i in range(40)), encoding="utf-8"
+        )
+        payload = serve.source_api(path=str(path))
+        self.assertFalse(payload["table"]["named_header"])
+        self.assertIn("col0", chr(10).join(payload["problems"]))
+
+    def test_a_file_with_a_header_and_no_data_is_refused_with_a_reason(self):
+        path = self.workspace / "headeronly.csv"
+        path.write_text("# notes" + chr(10) + "a,b,c" + chr(10), encoding="utf-8")
+        payload = serve.source_api(path=str(path))
+        self.assertTrue(payload["problems"])
+        self.assertIn("no data rows", chr(10).join(payload["problems"]))
 
 
 class TestSeedDispatch(unittest.TestCase):

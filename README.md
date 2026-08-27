@@ -224,6 +224,51 @@ Missing timestamps are fatal — the chronological order and the `interval` metr
 both need them. And topological order is *refused* rather than faked: it needs
 the DAG walked, and a flat list cannot.
 
+### Reading a file that was not written for you
+
+A real export does not begin with a header row. PVGIS writes eight lines of
+tab-separated metadata and then `time,G(i),H_sun,T2m,WS10m,Int`, with prose at
+the end. Solargis writes forty-one `#` comment lines and then a semicolon table.
+Taking line one as the header turned the first into a two-column file called
+*Latitude (decimal degrees)* and the second into one column of English, and both
+then failed for a reason that pointed nowhere near the cause.
+
+So `find_table` looks for the table instead of assuming where it is: **the header
+is the line that starts the longest run of rows that all split into the same
+number of fields.** That definition is what makes it robust — a preamble line
+splits into one or two fields and a footer line into one, so neither can outvote
+a thousand rows of six. Ties go to the wider table, because a long preamble of
+tab-separated key/value pairs is otherwise a strong candidate.
+
+This is parsing, not cleaning. Serrin still does not repair values — a constant
+column stays constant and gets dropped, a bad number stays bad. But a metadata
+preamble is part of the file *format*, and refusing to find the table is failing
+to read the file rather than declining to fix it.
+
+**And it says what it decided**, everywhere the decision is visible: in the
+studio, in `/api/source`'s problem list, and in `inspect`. Skipping forty-one
+lines is a judgement, and a judgement made silently is indistinguishable from a
+bug — the report is what lets you see at a glance that the guess was right.
+
+```
+$ python -m serrin inspect -i "Solargis_Prospect_Medina del Campo.csv"
+read as 13 columns x 13 rows, delimiter ';', header on line 42
+  skipped 41 line(s) above it (metadata preamble)
+  columns: Month, GHIm, Diffm, DNIm, T24, ALBm, WSm, RHm, PWATm, PRECm, ...
+```
+
+Rows that do not match the header's width are dropped rather than padded: a
+short row padded with blanks becomes held-forward values that look like real,
+very flat data. A file with a header and nothing under it is refused with the
+header, the column count and the delimiter in the message, because that is the
+one case where the guess probably *was* wrong.
+
+The other half of reading these files was the comma. `_parse_number` used to
+strip every comma as a thousands separator, which turns the European `12,5` into
+`125` — a tenfold error, silent, in a column that still looks perfectly
+plausible afterwards. The two conventions are now told apart by shape: commas
+every three digits group, a single comma between digits is a decimal point.
+
 ### Tempo
 
 The frame grid has a musical name. This does **not** change the tick model —
@@ -371,7 +416,8 @@ What it edits:
     hands over contents and not a path, and because data that travels with the
     piece is the better default. A path field stays for a file too large to want
     two copies of. The column picker shows *why* each column would be dropped:
-    constant, monotonic, or unparseable.
+    constant, monotonic, or unparseable — and a line above it says how the file
+    was read: delimiter, header line, columns, rows, and anything skipped.
   - `git` — a clone on this machine, read on every render.
   - `graph` — an exported history, which travels with the piece.
 
@@ -875,10 +921,21 @@ key did two unrelated things depending on hidden state.
 python tests/run_all.py          # both suites, and they cross-check each other
 ```
 
-322 Python tests, 166 Node tests, plus a cross-language round trip. Weighted toward the two properties the aesthetic
+345 Python tests, 175 Node tests, plus a cross-language round trip. Weighted toward the two properties the aesthetic
 depends on: **determinism** (a promise that is not tested is a wish) and
 **invariants** (a pedal that breaks one fails hundreds of frames later, in the
 browser, which is a miserable way to find out).
+
+`/api/catalog` reports which endpoints the running server serves, and the page
+checks that list against what it needs. Without it, a `serve.py` left running
+from before an endpoint existed answers `404`, the browser logs one line, and the
+UI shows nothing at all — an afternoon of debugging a page that was fine. Now it
+says *the server is older than this page*, and names the fix.
+
+The same reasoning covers three silent failures reported together as "nothing
+happened": choosing a file with no piece open, exporting a history with no piece
+open, and selecting two files where a piece takes one. All three now say what
+they did or would not do.
 
 `test_ui_boot.mjs` constructs the panel, studio and console against a minimal
 DOM stub and runs their first paint. It exists because a crash on load once

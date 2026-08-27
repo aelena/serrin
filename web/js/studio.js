@@ -58,6 +58,22 @@ const PARAM_CHOICES = {
 
 const LFO_HINT = 'sine:4beats · saw:1bar · square:0.1hz:0.4 · sample_hold:1/2beat';
 
+/**
+ * Endpoints this page cannot work without.
+ *
+ * Checked against what the catalog says the server serves, because the failure
+ * otherwise is invisible: a server started before an endpoint existed answers
+ * 404, the browser logs one line, and the UI shows nothing at all. Restarting
+ * serve.py is the fix, and nothing was telling anyone to do it.
+ */
+const REQUIRED_ENDPOINTS = [
+  '/api/source',
+  '/api/pieces',
+  '/api/piece',
+  '/api/piece/data',
+  '/api/render',
+];
+
 export class Studio {
   constructor(app) {
     this.app = app;
@@ -155,6 +171,21 @@ export class Studio {
     try {
       this.catalog = await this._get('/api/catalog');
       PARAM_CHOICES.aggregation = this.catalog.aggregations;
+
+      // An older server answers this endpoint but not the newer ones. Saying so
+      // once, loudly, beats a 404 per action and no explanation.
+      const served = this.catalog.endpoints ?? [];
+      const missing = REQUIRED_ENDPOINTS.filter((route) => !served.includes(route));
+      if (missing.length) {
+        this.stale = missing;
+        this.message(
+          `the server is older than this page — it does not serve ${missing.join(', ')}. ` +
+            'Stop it and run scripts/serve.py again.',
+          true,
+        );
+      } else {
+        this.stale = null;
+      }
     } catch (error) {
       this.message(`cannot load the catalog: ${error.message} — is serve.py running?`, true);
       // A minimal catalog, so the studio degrades to something usable rather
@@ -224,7 +255,13 @@ export class Studio {
 
   /** Upload a file into the piece folder and point the source at it. */
   async putData(file) {
-    if (!this.folder) return;
+    if (!this.folder) {
+      // Silence here was the actual reported symptom: choosing a file with no
+      // piece open did nothing, said nothing, and logged nothing.
+      this.message('open or create a piece first — a file has to go somewhere', true);
+      return;
+    }
+    this.message(`copying ${file.name} into the piece…`);
     try {
       const text = await file.text();
       const result = await this._post('/api/piece/data', {
@@ -249,6 +286,10 @@ export class Studio {
 
   /** Read a repository once and keep a portable copy of its history. */
   async exportHistory() {
+    if (!this.folder) {
+      this.message('open or create a piece first — the history has to go somewhere', true);
+      return;
+    }
     const repo = prompt('Path to the repository to export:', this.get('source.path') || '');
     if (!repo) return;
     this.message(`reading ${repo}…`);
@@ -606,7 +647,7 @@ export class Studio {
       ? `<ul class="problems">${problems}</ul>`
       : '<p class="dim">no problems.</p>';
 
-    if (kind === 'csv') return complaints + this._columnPicker();
+    if (kind === 'csv') return complaints + this._tableReport() + this._columnPicker();
     if (kind === 'graph') return complaints + this._graphReport();
 
     const branches = (source.branches ?? [])
@@ -619,6 +660,21 @@ export class Studio {
            ${this.catalog.max_voices}.</p>`
         : '')
     );
+  }
+
+  /** How the file was parsed. Shown always, not only when something was odd. */
+  _tableReport() {
+    const table = this.source?.table;
+    if (!table?.columns) return '';
+    const bits = [
+      `delimiter <b>${esc(table.delimiter === '\t' ? 'tab' : table.delimiter)}</b>`,
+      `header on line <b>${table.header_line}</b>`,
+      `${table.columns} columns`,
+      `${table.data_rows} rows`,
+    ];
+    if (table.preamble_lines) bits.push(`${table.preamble_lines} preamble lines skipped`);
+    if (table.dropped_rows) bits.push(`${table.dropped_rows} lines dropped`);
+    return `<p class="dim">${bits.join(' · ')}</p>`;
   }
 
   _graphReport() {
@@ -1077,9 +1133,19 @@ export class Studio {
     }
 
     $('studio-file')?.addEventListener('change', async (event) => {
-      const file = event.target.files?.[0];
+      const files = [...(event.target.files ?? [])];
       event.target.value = '';
-      if (file) await this.putData(file);
+      if (!files.length) return;
+      if (files.length > 1) {
+        // A piece has one source. Taking the first quietly is how two uploads
+        // become one mystery.
+        this.message(
+          `a piece has one source: taking ${files[0].name}, ignoring ` +
+            `${files.slice(1).map((f) => f.name).join(', ')}`,
+          true,
+        );
+      }
+      await this.putData(files[0]);
     });
 
     body.querySelector('[data-action="export-history"]')?.addEventListener('click', () =>
