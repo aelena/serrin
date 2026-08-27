@@ -10,8 +10,12 @@
  *
  * Structured as a mode registry because the modes are arriving in stages:
  *
- *   random   -- any key draws a note from the piece's own scale.
- *   notes    -- the piece's key map. Fixed positions, for playing melodies.
+ *   random   -- any key draws a note from the piece's own scale, freshly each
+ *               press. Scattershot: the same key rarely repeats a note.
+ *   fixed    -- every key keeps one note, chosen for you rather than by you.
+ *               No map to author, but pressing `h` three times gives the same
+ *               note three times, so it is playable rather than scattershot.
+ *   notes    -- the piece's key map. Positions you chose, for melodies.
  *   samples  -- planned. Key -> sample.
  *   beats    -- planned. Step sequencing and live recording over the stream.
  *
@@ -44,7 +48,8 @@ export const REGISTERS = {
 };
 
 export const MODES = {
-  random: { label: 'random · any key, a note in the scale', ready: true },
+  random: { label: 'random · a fresh note every press', ready: true },
+  fixed: { label: 'random but fixed · every key keeps its note', ready: true },
   notes: { label: "note map · the piece's own layout", ready: true },
   samples: { label: 'samples · key → sample (pending)', ready: false },
   beats: { label: 'beats · sequence and record (pending)', ready: false },
@@ -93,8 +98,16 @@ export class KeyboardEngine {
 
     this.pressCount = 0;
     this.lastNote = null;
-    this.held = new Map(); // key -> midi, so a key-up knows what it started
+    //: code -> the playing voice handle, so a key-up can release the right note.
+    //: Was a code -> midi map when notes were fire-and-forget; a held note needs
+    //: the handle, not just what it played.
+    this.held = new Map();
     this.onNote = null; // set by main.js for visual feedback
+
+    //: How much of the peak a held note holds at. 0 is the original percussive
+    //: bleep, which is still a legitimate choice rather than a limitation.
+    this.sustain = 0.6;
+    this.releaseTime = 0.14;
 
     //: The piece's map, by physical key position. Empty until a piece is loaded.
     this.keymap = {};
@@ -226,9 +239,11 @@ export class KeyboardEngine {
     }
 
     const bounds = this.registerBounds();
+    const held = this.held.size ? ` · ${this.held.size} held` : '';
+    const hold = this.sustain > 0.005 ? '' : ' · percussive';
     return (
       `${this.scale.name}${source} · ${this.pool.length} notes ` +
-      `between ${noteName(bounds.low)} and ${noteName(bounds.high)}${shift}`
+      `between ${noteName(bounds.low)} and ${noteName(bounds.high)}${shift}${hold}${held}`
     );
   }
 
@@ -262,17 +277,21 @@ export class KeyboardEngine {
     const midi = this._noteFor(event);
     if (midi === null) return null;
 
-    this.held.set(event.code, midi);
     this.pressCount += 1;
     this.lastNote = midi;
 
-    this.audio.playNote(midi, this.level, {
+    const voice = this.audio.playNote(midi, this.level, {
       waveform: this.waveform,
-      // Short and percussive. "Bleep", not "pad": it has to punch through the
-      // stream rather than sit under it.
+      // Fast attack either way: it has to punch through the stream rather than
+      // sit under it. What sustain changes is what happens after.
       attack: 0.003,
       decay: 0.22,
+      sustain: this.sustain,
+      release: this.releaseTime,
     });
+    // Stored even when null (no audio context yet), so the key still counts as
+    // held and does not machine-gun.
+    this.held.set(event.code, voice ?? null);
 
     const played = {
       midi,
@@ -286,12 +305,23 @@ export class KeyboardEngine {
     return played;
   }
 
+  /** Let go: release the note this position started, if it is still holding. */
   release(event) {
+    const voice = this.held.get(event.code);
     this.held.delete(event.code);
+    voice?.release?.();
   }
 
-  /** Everything currently held, silenced. Called when the mode is switched off. */
+  /**
+   * Everything currently held, released.
+   *
+   * Called when the keyboard is switched off, when a piece is unloaded, and --
+   * importantly -- when the window loses focus. Alt-tabbing mid-chord otherwise
+   * leaves a drone behind that nothing on the page can reach any more, because
+   * the key-up lands in whatever window took focus.
+   */
   panic() {
+    for (const voice of this.held.values()) voice?.release?.();
     this.held.clear();
   }
 
@@ -300,6 +330,8 @@ export class KeyboardEngine {
     switch (this.mode) {
       case 'random':
         return this._randomNote();
+      case 'fixed':
+        return this._fixedNote(event);
       case 'notes':
         return this._mappedNote(event);
       // The planned modes are unreachable -- `claims()` gates on `ready` -- but
@@ -327,6 +359,30 @@ export class KeyboardEngine {
       return null;
     }
     return resolved.midi;
+  }
+
+  /**
+   * The note this key always plays, drawn from (seed, key position).
+   *
+   * The difference from `random` is the second half of that pair: `random` keys
+   * off the *press number*, so a key gives a new note every time and the
+   * instrument is scattershot. Keying off the *position* instead means `h` is
+   * always the same note, which makes it playable -- you can learn it, find
+   * intervals, come back to a phrase -- without anyone having authored a map.
+   *
+   * Seed-derived, so a different piece scatters differently while any one piece
+   * keeps its layout across reloads. Position rather than character, for the
+   * same reason key maps use positions: it survives a change of layout.
+   */
+  _fixedNote(event) {
+    if (!this.pool.length) return null;
+    const draw = rng(hash32(`${this.seed}/fixed/${event.code}`));
+    const midi = this.pool[Math.floor(draw() * this.pool.length)];
+    const span = this.scale?.span ?? 12;
+    return Math.max(
+      PIANO_LOW,
+      Math.min(PIANO_HIGH, midi + this.octaveOffset * span),
+    );
   }
 
   /**

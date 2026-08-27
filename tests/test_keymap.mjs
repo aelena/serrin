@@ -60,13 +60,24 @@ const visualDoc = JSON.parse(await readFile(path.join(root, 'out/stream_visual.j
 const PENTATONIC = { offsets: [0, 3, 5, 7, 10], span: 12, root: 45, name: 'pentatonic_minor' };
 const MAJOR = { offsets: [0, 2, 4, 5, 7, 9, 11], span: 12, root: 48, name: 'ionian' };
 
+/**
+ * Stand-in audio engine. Returns a handle, because held notes need one -- a
+ * key-up has to release the note it started, not merely forget it.
+ */
 function fakeAudio() {
   return {
     started: true,
     played: [],
     playNote(midi, velocity, options) {
-      this.played.push({ midi, velocity, options });
-      return { midi };
+      const handle = {
+        midi,
+        released: (options?.sustain ?? 0) <= 0.0005,
+        release() {
+          this.released = true;
+        },
+      };
+      this.played.push({ midi, velocity, options, handle });
+      return handle;
     },
     setKeyboardCrushed() {},
   };
@@ -350,6 +361,159 @@ test('modifiers and reserved keys are still never claimed', () => {
   assert.ok(!keyboard.claims(keyEvent('KeyA', 'a', { ctrlKey: true })));
   assert.ok(!keyboard.claims(keyEvent('Space', ' ')));
   assert.ok(!keyboard.claims(keyEvent('ArrowUp', 'ArrowUp')));
+});
+
+// ---------------------------------------------------------------------------
+console.log('holding a key');
+
+test('a held note sustains, and letting go releases it', () => {
+  const { keyboard, audio } = makeEngine({ mode: 'notes' });
+  keyboard.setKeymap(defaultKeymap());
+  keyboard.sustain = 0.6;
+
+  keyboard.press(keyEvent('KeyA', 'a'));
+  const handle = audio.played[0].handle;
+  assert.equal(audio.played[0].options.sustain, 0.6, 'sustain did not reach the engine');
+  assert.equal(handle.released, false, 'the note released itself while held');
+
+  keyboard.release(keyEvent('KeyA', 'a'));
+  assert.equal(handle.released, true, 'letting go did not release the note');
+});
+
+test('sustain zero is still the percussive bleep', () => {
+  // Kept reachable on purpose: a bleep is a choice, not a limitation.
+  const { keyboard, audio } = makeEngine({ mode: 'notes' });
+  keyboard.setKeymap(defaultKeymap());
+  keyboard.sustain = 0;
+  keyboard.press(keyEvent('KeyA', 'a'));
+  assert.equal(audio.played[0].options.sustain, 0);
+  assert.equal(audio.played[0].handle.released, true, 'a bleep should end itself');
+});
+
+test('each key releases its own note, not the last one', () => {
+  const { keyboard, audio } = makeEngine({ mode: 'notes' });
+  keyboard.setKeymap(defaultKeymap());
+  keyboard.sustain = 0.6;
+
+  keyboard.press(keyEvent('KeyA', 'a'));
+  keyboard.press(keyEvent('KeyS', 's'));
+  keyboard.press(keyEvent('KeyD', 'd'));
+  keyboard.release(keyEvent('KeyS', 's'));
+
+  const [first, second, third] = audio.played.map((entry) => entry.handle);
+  assert.equal(second.released, true, 'the wrong note was released');
+  assert.equal(first.released, false, 'releasing one key released another');
+  assert.equal(third.released, false);
+});
+
+test('panic releases everything held', () => {
+  // What runs on window blur: a key-up landing in another window would otherwise
+  // leave a drone nothing on the page can reach.
+  const { keyboard, audio } = makeEngine({ mode: 'notes' });
+  keyboard.setKeymap(defaultKeymap());
+  keyboard.sustain = 0.6;
+  for (const code of ['KeyA', 'KeyS', 'KeyD']) keyboard.press(keyEvent(code, 'x'));
+
+  keyboard.panic();
+  for (const entry of audio.played) {
+    assert.equal(entry.handle.released, true, 'panic left a note holding');
+  }
+  assert.equal(keyboard.held.size, 0);
+});
+
+test('a re-press after release plays again', () => {
+  const { keyboard, audio } = makeEngine({ mode: 'notes' });
+  keyboard.setKeymap(defaultKeymap());
+  keyboard.press(keyEvent('KeyA', 'a'));
+  keyboard.release(keyEvent('KeyA', 'a'));
+  keyboard.press(keyEvent('KeyA', 'a'));
+  assert.equal(audio.played.length, 2);
+});
+
+// ---------------------------------------------------------------------------
+console.log('the fixed mode');
+
+test('a key always plays the same note', () => {
+  // The whole request: pressing one key three times gives the same note three
+  // times, without anyone having authored a map.
+  const { keyboard } = makeEngine({ mode: 'fixed' });
+  const notes = [];
+  for (let i = 0; i < 5; i += 1) {
+    notes.push(keyboard.press(keyEvent('KeyH', 'h')).midi);
+    keyboard.release(keyEvent('KeyH', 'h'));
+  }
+  assert.equal(new Set(notes).size, 1, `it moved: ${notes.join(' ')}`);
+});
+
+test('different keys mostly play different notes', () => {
+  const { keyboard } = makeEngine({ mode: 'fixed' });
+  const notes = new Set();
+  for (const code of ALL_KEYS) {
+    notes.add(keyboard.press(keyEvent(code, 'x')).midi);
+    keyboard.release(keyEvent(code, 'x'));
+  }
+  // Collisions are expected from a random draw; one note for the whole keyboard
+  // would not be.
+  assert.ok(notes.size > ALL_KEYS.length / 3, `only ${notes.size} distinct notes`);
+});
+
+test('random still moves, which is the whole difference', () => {
+  const { keyboard } = makeEngine({ mode: 'random' });
+  const notes = [];
+  for (let i = 0; i < 8; i += 1) {
+    notes.push(keyboard.press(keyEvent(`k${i}`, 'h')).midi);
+  }
+  assert.ok(new Set(notes).size > 1, 'random stopped being random');
+});
+
+test('the layout is stable across reloads of the same piece', () => {
+  const first = makeEngine({ mode: 'fixed' }).keyboard;
+  const second = makeEngine({ mode: 'fixed' }).keyboard;
+  for (const code of ['KeyA', 'KeyH', 'Digit4', 'Slash']) {
+    const a = first.press(keyEvent(code, 'x')).midi;
+    first.release(keyEvent(code, 'x'));
+    const b = second.press(keyEvent(code, 'x')).midi;
+    second.release(keyEvent(code, 'x'));
+    assert.equal(a, b, `${code} differs between two loads of the same piece`);
+  }
+});
+
+test('a different piece scatters differently', () => {
+  const { keyboard } = makeEngine({ mode: 'fixed' });
+  const before = keyboard.press(keyEvent('KeyA', 'a')).midi;
+  keyboard.release(keyEvent('KeyA', 'a'));
+
+  keyboard.seed ^= 0x5f5f5f5f;
+  const after = keyboard.press(keyEvent('KeyA', 'a')).midi;
+  assert.notEqual(before, after, 'the seed does not reach the layout');
+});
+
+test('every fixed note is in the scale and on the piano', () => {
+  const { keyboard } = makeEngine({ mode: 'fixed' });
+  const allowed = new Set(keyboard.scale.offsets);
+  const { root, span } = keyboard.scale;
+  for (const code of ALL_KEYS) {
+    const midi = keyboard.press(keyEvent(code, 'x')).midi;
+    keyboard.release(keyEvent(code, 'x'));
+    assert.ok(midi >= PIANO_LOW && midi <= PIANO_HIGH, `${code} left the piano`);
+    assert.ok(allowed.has((((midi - root) % span) + span) % span), `${code} is out of scale`);
+  }
+});
+
+test('the octave shift moves the fixed layout too', () => {
+  const { keyboard } = makeEngine({ mode: 'fixed' });
+  const base = keyboard.press(keyEvent('KeyA', 'a')).midi;
+  keyboard.release(keyEvent('KeyA', 'a'));
+  keyboard.shiftOctave(1);
+  assert.equal(keyboard.press(keyEvent('KeyA', 'a')).midi, base + 12);
+});
+
+test('fixed claims every key, like random and unlike notes', () => {
+  const { keyboard } = makeEngine({ mode: 'fixed' });
+  keyboard.setKeymap({});
+  for (const key of ['a', 'q', ';', '4']) {
+    assert.ok(keyboard.claims(keyEvent('KeyX', key)), `did not claim ${key}`);
+  }
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -44,7 +44,6 @@ export class DebugConsole {
     this.app = app;
     this.root = document.getElementById('console');
     this.body = document.getElementById('console-body');
-    this.visible = false;
     this.tab = 'log';
     this.entries = [];
     this.trace = null;
@@ -97,13 +96,17 @@ export class DebugConsole {
   }
 
   // -- visibility ----------------------------------------------------------
+  get visible() {
+    return this.app.views.snapshot().console;
+  }
+
   toggle(force) {
-    this.visible = force ?? !this.visible;
-    this.root.hidden = !this.visible;
+    const shown = this.app.views.setOverlay('console', force ?? !this.visible);
     // Journalling is expensive enough to be worth switching off when nobody is
     // looking: a hundred objects a second, retained.
-    this.app.audio?.setJournalling?.(this.visible && this.tab === 'audio');
-    if (this.visible) this._render();
+    this.app.audio?.setJournalling?.(shown && this.tab === 'audio');
+    if (shown) this._render();
+    return shown;
   }
 
   _wireTabs() {

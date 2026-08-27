@@ -34,11 +34,24 @@ python -m serrin render -i data/monitoring.csv -c presets/gritty_01.json
 python scripts/serve.py            # opens http://localhost:8000/web/
 ```
 
-Press <kbd>space</kbd> to begin, <kbd>p</kbd> for the author panel.
+**The app opens in the studio.** You pick or configure a piece, press render,
+then press play — and that last press is also the user gesture browsers require
+before audio, which is why there is no "begin" ceremony.
 
-A browser will not make sound until you ask it to, which is why there is a
-"begin" gate. Opening `web/index.html` directly from disk will *not* work —
-ES modules and `fetch` both refuse `file://`. Hence the tiny server.
+Two views, one at a time:
+
+- **studio** — where you start. Configuring a piece; nothing sounds.
+- **stage** — the piece playing, with the panel (<kbd>p</kbd>) for
+  performance-time controls.
+
+<kbd>F3</kbd> moves between them. Going back to the studio pauses: design time
+is quiet, performance time sounds.
+
+`?preset=gritty_01` or `?play=01-decay` skip the studio and go straight to the
+stage, for a demo or a link.
+
+Opening `web/index.html` directly from disk will *not* work — ES modules and
+`fetch` both refuse `file://`. Hence the tiny server.
 
 ---
 
@@ -279,6 +292,26 @@ is refused when the manifest is saved.
 The browser's default map and the CLI's `default_keymap()` are cross-checked by a
 test, since both exist and a divergence would mean "the same piece" plays two
 different layouts.
+
+### Two views, and one place that decides
+
+The app grew four independently hidden elements — gate, studio, panel, console —
+each toggled by whoever needed it. Nothing stopped them contradicting each other:
+the studio over a playing stage, the panel over the studio, an error banner
+behind a view that had already loaded. Every one of those was reachable, none was
+intended, and none could be tested without a browser.
+
+`views.js` holds one piece of state and derives visibility from it. `snapshot()`
+is a pure function from state to what should be on screen; `main.js` applies it in
+one place and nothing else touches `hidden`. The illegal combinations are now
+unrepresentable rather than merely avoided, and the whole thing runs in node —
+there is a test that walks the entire state space and asserts every reachable
+combination is one somebody meant.
+
+The rules it encodes: exactly one view at a time; the panel is a stage overlay
+and refuses to open anywhere else; the console shows over either; the stage has
+no cursor unless something is layered over it; an error is state, so a view
+change cannot quietly navigate away from it.
 
 ### The studio
 
@@ -569,7 +602,8 @@ Modes arrive in stages. Only the first exists:
 
 | mode | what it does |
 |---|---|
-| `random` | any key draws a note from the piece's own scale — **implemented** |
+| `random` | a fresh note every press — scattershot — **implemented** |
+| `fixed` | every key keeps one note, chosen for you — **implemented** |
 | `notes` | the piece's own key map, for playing melodies — **implemented** |
 | `samples` | key → sample — pending |
 | `beats` | step sequencing and live recording over the stream — pending |
@@ -583,6 +617,25 @@ dead. `random` has no map and claims everything.
 
 <kbd>↑</kbd>/<kbd>↓</kbd> shift the whole map by octaves while playing — the
 arrows are never claimed, which makes them the natural place for it.
+
+**`fixed` is `random` keyed differently.** `random` draws from the press number,
+so a key gives a new note every time; `fixed` draws from the *key position*, so
+one key is always the same note. That makes it playable — you can learn it, find
+intervals, come back to a phrase — without anyone having authored a map. Still
+seed-derived, so a different piece scatters differently while any one piece keeps
+its layout across reloads.
+
+**Holding a key holds the note.** The envelope decays to a sustain level and
+stays there until you let go. Sustain 0 is the original percussive bleep, still
+reachable from the panel, because a bleep is a choice rather than a limitation.
+Losing window focus releases everything held — a key-up landing in another window
+would otherwise leave a drone nothing on the page can reach.
+
+**The four timbres are gain-matched.** Sine was reported as "not sounding", and
+it was not broken: it puts all its energy in the fundamental, while a square or a
+sawtooth spreads it across a harmonic series that reads as far louder — which
+under eight sawtooth data voices amounts to inaudible. Each waveform now carries
+a compensating gain, normalized down from sine so there is no headroom problem.
 
 **Which notes.** The pipeline now exports the key the piece is in
 (`meta.scale`), so the keyboard plays *inside* it rather than over the top of
@@ -691,6 +744,7 @@ No framework, no bundler. ES modules straight from `web/js/`.
 | `console.js` | the devtools drawer, and the JS reconstruction |
 | `studio.js` | the design-time view: piece config, chain editor, key map |
 | `keymap.js` | the physical layout, and what each position plays |
+| `views.js` | which surface is showing, and which combinations are legal |
 | `panel.js` | the author panel |
 | `main.js` | wiring, URL params, keyboard |
 
@@ -770,7 +824,7 @@ key did two unrelated things depending on hidden state.
 python tests/run_all.py          # both suites, and they cross-check each other
 ```
 
-288 Python tests, 115 Node tests, plus a cross-language round trip. Weighted toward the two properties the aesthetic
+288 Python tests, 152 Node tests, plus a cross-language round trip. Weighted toward the two properties the aesthetic
 depends on: **determinism** (a promise that is not tested is a wish) and
 **invariants** (a pedal that breaks one fails hundreds of frames later, in the
 browser, which is a miserable way to find out).

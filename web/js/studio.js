@@ -80,21 +80,46 @@ export class Studio {
       if (this.visible) this.paint();
     });
 
-    $('studio-close').addEventListener('click', () => this.toggle(false));
+    // "to the stage" rather than a close box: the studio is not a dialog over
+    // the piece, it is the other half of the app.
+    $('studio-close').addEventListener('click', () => this.leave());
     $('studio-new').addEventListener('click', () => this.createPiece());
     $('studio-save').addEventListener('click', () => this.save());
     $('studio-render').addEventListener('click', () => this.render());
     $('studio-play').addEventListener('click', () => this.playCurrent());
   }
 
-  // -- visibility ----------------------------------------------------------
-  async toggle(force) {
-    this.visible = force ?? !this.visible;
-    this.root.hidden = !this.visible;
-    if (!this.visible) return;
+  // -- coming and going ----------------------------------------------------
+  get visible() {
+    return this.app.views.inStudio;
+  }
+
+  /** Enter the studio: load what it needs, then show it. */
+  async enter() {
+    this.app.views.go('studio');
+    await this.refreshFromServer();
+  }
+
+  /** Reload the catalog and the piece list. Cheap enough to do on every entry. */
+  async refreshFromServer() {
     if (!this.catalog) await this.loadCatalog();
     await this.loadPieces();
     this.paint();
+  }
+
+  /**
+   * Leave for the stage.
+   *
+   * Only possible once something is loaded: the stage with no reader is a black
+   * rectangle, and sending the author to it would look like a crash.
+   */
+  leave() {
+    if (!this.app.reader) {
+      this.message('nothing rendered yet — press render, then play it', true);
+      return false;
+    }
+    this.app.views.go('stage');
+    return true;
   }
 
   message(text, warning = false) {
@@ -263,7 +288,13 @@ export class Studio {
     }
   }
 
-  /** Load the rendered pair into the engines and drop back to the stage. */
+  /**
+   * Play the piece that is open: load its render, go to the stage, start.
+   *
+   * Goes through `app.playStreams`, which is the only path into playing -- so
+   * "how did this start sounding" has one answer, and the click that gets here
+   * is the user gesture the browser wants before audio.
+   */
   async playCurrent() {
     const render = this.detail?.render ?? {};
     const audio = render.audio_url ?? this.lastRender?.audio;
@@ -273,18 +304,21 @@ export class Studio {
       return;
     }
     try {
-      await this.app.adoptRender({
-        label: render.label ?? this.manifest?.name ?? 'piece',
-        audio,
-        visual,
-        kind: this.manifest?.source?.kind ?? 'csv',
-        chain: this.manifest?.preset?.name ?? '',
-      });
+      await this.app.playStreams(audio, visual, this.manifest?.name ?? 'piece');
+      // After the streams, because the key map is resolved against the render's
+      // scale and there is no scale until the render is loaded.
       this.applyPerformance();
-      this.toggle(false);
     } catch (error) {
+      this.app.views.go('studio');
       this.message(error.message, true);
     }
+  }
+
+  /** Open a piece and play it in one step. Used by `?play=…`. */
+  async playPiece(folder) {
+    await this.openPiece(folder);
+    if (this.get('render.fingerprint')) await this.playCurrent();
+    else this.message(`${folder} has not been rendered yet — press render`, true);
   }
 
   /**

@@ -211,11 +211,21 @@ test('the mode registry says which modes work', () => {
   const ready = Object.entries(MODES)
     .filter(([, mode]) => mode.ready)
     .map(([name]) => name);
-  assert.deepEqual(ready.sort(), ['notes', 'random']);
+  assert.deepEqual(ready.sort(), ['fixed', 'notes', 'random']);
   // The pending ones stay listed and stay disabled: the shape is visible and
-  // nothing pretends.
+  // nothing pretends. This assertion is about the state of the world, so it
+  // moves as modes land rather than being loosened into uselessness.
   assert.equal(MODES.samples.ready, false);
   assert.equal(MODES.beats.ready, false);
+});
+
+test('every ready mode has a label that says what it does', () => {
+  // Three playable modes is enough that "random" and "random but fixed" have to
+  // be distinguishable from the dropdown alone.
+  for (const [name, mode] of Object.entries(MODES)) {
+    assert.ok(mode.label.length > 8, `${name} has no useful label`);
+    if (!mode.ready) assert.match(mode.label, /pending/, `${name} looks available`);
+  }
 });
 
 // ---------------------------------------------------------------------------

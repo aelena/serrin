@@ -147,11 +147,17 @@ export class Panel {
       `delay ${app.audio.delayNote} = ${(delaySeconds * 1000).toFixed(0)} ms`;
   }
 
+  get visible() {
+    // Derived: the state machine decides, and it refuses the panel anywhere but
+    // the stage. Reading it from there means the panel cannot believe itself
+    // visible while hidden, which is how the old flag drifted.
+    return this.app.views.snapshot().panel;
+  }
+
   toggle(force) {
-    this.visible = force ?? !this.visible;
-    this.root.hidden = !this.visible;
-    document.getElementById('stage').style.cursor = this.visible ? 'default' : 'none';
-    if (this.visible) this._paintEnvelope();
+    const shown = this.app.views.setOverlay('panel', force ?? !this.visible);
+    if (shown) this._paintEnvelope();
+    return shown;
   }
 
   // -- wiring --------------------------------------------------------------
@@ -159,6 +165,13 @@ export class Panel {
     const app = this.app;
 
     $('panel-close').addEventListener('click', () => this.toggle(false));
+    $('ctl-to-studio').addEventListener('click', () => {
+      // Design time is quiet: going back to configure stops the piece rather
+      // than leaving it playing under a screen full of settings.
+      app.transport?.pause();
+      $('ctl-play').textContent = 'play';
+      app.studio?.enter();
+    });
 
     $('ctl-play').addEventListener('click', async () => {
       const playing = await app.transport.toggle();
@@ -212,7 +225,11 @@ export class Panel {
     };
 
     $('ctl-console-open').addEventListener('click', () => app.console?.toggle(true));
-    $('ctl-studio-open').addEventListener('click', () => app.studio?.toggle(true));
+    $('ctl-studio-open').addEventListener('click', () => {
+      app.transport?.pause();
+      $('ctl-play').textContent = 'play';
+      app.studio?.enter();
+    });
 
     $('ctl-source-csv').addEventListener('click', () => $('ctl-source-file').click());
     $('ctl-source-file').addEventListener('change', async (event) => {
@@ -364,6 +381,11 @@ export class Panel {
     this._range('ctl-keyboard-level', 'out-keyboard-level', (v) => {
       app.keyboard.level = v;
       return v.toFixed(2);
+    });
+    this._range('ctl-keyboard-sustain', 'out-keyboard-sustain', (v) => {
+      // 0 is the original percussive bleep, kept reachable: a bleep is a choice.
+      app.keyboard.sustain = v;
+      return v < 0.005 ? 'off (bleep)' : v.toFixed(2);
     });
     $('ctl-keyboard-wave').addEventListener('change', (e) => {
       app.keyboard.waveform = e.target.value;

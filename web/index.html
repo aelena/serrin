@@ -16,23 +16,18 @@
     -->
     <canvas id="stage"></canvas>
 
-    <div id="gate" class="gate">
-      <div class="gate-inner">
+    <!--
+      No "begin" gate any more. It existed because the app used to open straight
+      onto a playing stage, and browsers refuse audio without a user gesture --
+      so a ceremonial button had to exist to be the gesture.
+      The app now opens in the studio, where the gesture is pressing play on a
+      piece you have configured. What is left is somewhere to put a failure.
+    -->
+    <div id="failure" class="failure" hidden>
+      <div class="failure-inner">
         <h1>serrin</h1>
-        <p class="sub">opaque noise translator</p>
-        <p class="label" id="gate-label">loading…</p>
-        <button id="gate-start" disabled>begin</button>
-        <p class="hint">
-          browsers will not make sound until you ask them to
-          <br />
-          <kbd>space</kbd> play/pause · <kbd>p</kbd> panel · <kbd>F2</kbd> console ·
-          <kbd>F3</kbd> studio · <kbd>f</kbd> fullscreen ·
-          <kbd>1</kbd>–<kbd>8</kbd> mute a voice
-          <br />
-          with the keyboard armed, letters and digits play notes —
-          <kbd>space</kbd>, <kbd>esc</kbd> and <kbd>p</kbd> always stay yours
-        </p>
-        <p class="error" id="gate-error" hidden></p>
+        <p id="failure-text"></p>
+        <button id="failure-dismiss">carry on</button>
       </div>
     </div>
 
@@ -56,6 +51,7 @@
         <div class="row">
           <button id="ctl-play">play</button>
           <button id="ctl-stop">stop</button>
+          <button id="ctl-to-studio" title="back to configuring (F3)">to the studio</button>
         </div>
         <label>preset
           <select id="ctl-preset"></select>
@@ -170,6 +166,9 @@
         </label>
         <label>level <output id="out-keyboard-level">0.70</output>
           <input id="ctl-keyboard-level" type="range" min="0" max="1" step="0.01" value="0.7" />
+        </label>
+        <label>sustain while held <output id="out-keyboard-sustain">0.60</output>
+          <input id="ctl-keyboard-sustain" type="range" min="0" max="1" step="0.05" value="0.6" />
         </label>
         <label>timbre
           <select id="ctl-keyboard-wave">
@@ -359,7 +358,7 @@
         <button id="studio-save" disabled>save</button>
         <button id="studio-render" disabled>render</button>
         <button id="studio-play" disabled>play it</button>
-        <button id="studio-close" title="back to the stage (F3)">×</button>
+        <button id="studio-close" title="to the stage (F3)">to the stage</button>
       </header>
       <p id="studio-message" class="studio-message"></p>
       <div class="studio-columns">

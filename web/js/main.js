@@ -5,11 +5,24 @@
  * the Transport -- one clock, one frame, both engines fed from it. Everything
  * else here is loading and keyboard shortcuts.
  *
+ * **The studio is the entry point.** Opening the app used to drop you straight
+ * onto a playing stage, fed from a hardcoded list of rendered pairs -- which was
+ * the old render-first flow with a piece format bolted beside it. A piece is the
+ * document, and you do not open a document already playing.
+ *
+ * So: load, land in the studio, configure or pick a piece, press play. That last
+ * press is also the user gesture browsers require before audio, which is why the
+ * "begin" gate could be deleted rather than moved.
+ *
+ * Visibility is not set here. `ViewState` owns which surface is showing and
+ * `applyView` is the single place that touches `hidden` -- see views.js for why.
+ *
  * URL parameters, all optional:
- *   ?preset=gritty_01      which rendered pair to load (default: gritty_01)
- *   ?audio=…&visual=…      explicit paths, for a render outside out/
- *   ?panel=1               open the author panel immediately
- *   ?autoplay=1            skip the gate (only works where autoplay is allowed)
+ *   ?piece=01-decay        open this piece in the studio
+ *   ?play=01-decay         go straight to the stage with this piece's render
+ *   ?preset=gritty_01      go straight to the stage with a built-in pair
+ *   ?audio=…&visual=…      explicit paths, for a render outside a piece
+ *   ?panel=1               open the author panel once on the stage
  *   ?speed=1.5             initial tick speed
  */
 
@@ -23,11 +36,14 @@ import { VisualEngine } from './visual.js';
 import { DebugConsole } from './console.js';
 import { Panel } from './panel.js';
 import { Studio } from './studio.js';
+import { ViewState } from './views.js';
 
 /**
- * The presets the panel can switch between. Each needs a rendered pair in out/.
- * Kept as a literal list because phase 1 renders offline -- there is no way to
- * discover them from a static file server.
+ * Built-in rendered pairs, for going straight to the stage without a piece.
+ *
+ * No longer the app's index -- pieces are, and they come from the server. This
+ * is the demo path: clone the repo, run one render, open the page with
+ * `?preset=gritty_01` and hear something without configuring anything first.
  */
 const PRESETS = [
   {
@@ -64,7 +80,18 @@ const PRESETS = [
 
 const params = new URLSearchParams(location.search);
 
+/** One piece of state for what is on screen. Nothing else touches `hidden`. */
+const views = new ViewState('studio');
+
+/**
+ * The studio and the console exist from the first frame, not from the first
+ * render. They used to be built inside `adopt()`, which meant they did not
+ * exist until something had been loaded -- fine when the app opened onto a
+ * playing stage, impossible now that the studio *is* the opening screen.
+ */
+
 const app = {
+  views,
   presets: PRESETS,
   presetId: params.get('preset') ?? PRESETS[0].id,
   reader: null,
@@ -173,16 +200,32 @@ function computeEntryOrder(reader, strategy) {
 // boot
 // ---------------------------------------------------------------------------
 const stage = document.getElementById('stage');
-const gate = document.getElementById('gate');
-const gateStart = document.getElementById('gate-start');
-const gateLabel = document.getElementById('gate-label');
-const gateError = document.getElementById('gate-error');
+const failure = document.getElementById('failure');
+const failureText = document.getElementById('failure-text');
+
+/**
+ * Paint the DOM from the view state. The only place `hidden` is assigned.
+ *
+ * Derived rather than toggled, so the contradictory combinations that used to be
+ * reachable -- studio over a playing stage, panel over the studio, an error
+ * behind a loaded view -- are now unrepresentable rather than merely avoided.
+ */
+function applyView(snapshot) {
+  document.getElementById('studio').hidden = !snapshot.studio;
+  document.getElementById('panel').hidden = !snapshot.panel;
+  document.getElementById('console').hidden = !snapshot.console;
+  failure.hidden = snapshot.error === null;
+  if (snapshot.error !== null) failureText.textContent = snapshot.error;
+  stage.style.cursor = snapshot.pointer ? 'default' : 'none';
+  // The stage keeps rendering underneath the studio; it just has nothing to
+  // render until a piece is loaded, and stops being covered when you play one.
+  document.body.dataset.view = snapshot.view;
+}
+
+views.onChange = applyView;
 
 function showError(error) {
-  gate.hidden = false;
-  gateError.hidden = false;
-  gateError.textContent = String(error.message ?? error);
-  gateStart.disabled = true;
+  views.fail(String(error.message ?? error));
   console.error(error);
 }
 
@@ -209,9 +252,6 @@ function adopt(reader) {
   // Built once and re-pointed, like the panel: it owns the log, and a preset
   // switch should not erase what happened before it.
   if (!app.console) app.console = new DebugConsole(app);
-  // Built once: it holds a working copy of the manifest, and rebuilding it on a
-  // preset switch would silently discard unsaved edits.
-  if (!app.studio) app.studio = new Studio(app);
   app.console.log(
     `loaded ${reader.meta.label ?? 'stream'} — ${reader.voiceCount} voices, ` +
       `${reader.length} frames, ${reader.tempo.describe()}`,
@@ -231,52 +271,79 @@ function adopt(reader) {
     },
   });
 
-  gateLabel.textContent = `${reader.meta.label ?? 'stream'} · ${reader.voiceCount} voices · ${reader.duration.toFixed(0)}s`;
-
   // Constructed once, refreshed thereafter -- see Panel.refresh().
   if (app.panel) {
     app.panel.refresh();
   } else {
     app.panel = new Panel(app);
-    app.panel.toggle(params.get('panel') === '1');
   }
 }
 
+/**
+ * Go to the stage with a rendered pair, starting the transport.
+ *
+ * The one path into playing. Called by the studio's "play it", by a `?play=` or
+ * `?preset=` parameter, and by nothing else -- so "how did this start sounding"
+ * has a single answer.
+ */
+async function playStreams(audioUrl, visualUrl, label = '') {
+  const reader = await loadStreams(audioUrl, visualUrl);
+  adopt(reader);
+  views.clearError();
+  views.go('stage');
+  await app.transport.play();
+  app.panel?.refresh();
+  app.console?.log(`playing ${label || reader.meta.label || 'stream'}`, 'render');
+}
+
+app.playStreams = playStreams;
+
 async function boot() {
-  const preset = PRESETS.find((p) => p.id === app.presetId) ?? PRESETS[0];
-  const audioUrl = params.get('audio') ?? preset.audio;
-  const visualUrl = params.get('visual') ?? preset.visual;
+  // Built before anything is loaded: the studio IS the opening screen, so it
+  // cannot wait for a render the way it did when the stage came first.
+  app.console = new DebugConsole(app);
+  app.studio = new Studio(app);
+  app.studioReady = () => app.studio.enter();
+
+  // Painted before anything is loaded, so the studio is on screen while the
+  // catalog and the piece list are still in flight rather than after.
+  applyView(views.snapshot());
+
+  const directAudio = params.get('audio');
+  const directVisual = params.get('visual');
+  const presetId = params.get('preset');
+  const playPiece = params.get('play');
 
   try {
-    adopt(await loadStreams(audioUrl, visualUrl));
+    if (directAudio && directVisual) {
+      await playStreams(directAudio, directVisual, 'the given pair');
+      return;
+    }
+    if (presetId) {
+      const preset = PRESETS.find((entry) => entry.id === presetId);
+      if (!preset) throw new Error(`no built-in preset called ${presetId}`);
+      app.presetId = preset.id;
+      await playStreams(preset.audio, preset.visual, preset.id);
+      return;
+    }
+
+    // The default: the studio, with nothing sounding.
+    await app.studioReady();
+    if (playPiece) await app.studio.playPiece(playPiece);
+    else if (params.get('piece')) await app.studio.openPiece(params.get('piece'));
   } catch (error) {
     showError(error);
-    return;
   }
 
-  gateStart.disabled = false;
-  gateStart.focus();
+  if (params.get('panel') === '1') views.setOverlay('panel', true);
 
-  const begin = async () => {
-    gate.hidden = true;
-    await app.transport.play();
-    document.getElementById('ctl-play').textContent = 'pause';
-  };
-
-  gateStart.addEventListener('click', begin);
-  if (params.get('autoplay') === '1') begin().catch(showError);
-  if (params.get('view') === 'studio') {
-    gate.hidden = true;
-    app.studio.toggle(true);
-  }
-
-  // Panel refresh runs on its own rAF so the engines' loop stays clean.
-  const panelLoop = () => {
+  // Panel and console refresh on their own loop so the engines' one stays clean.
+  const chrome = () => {
     app.panel?.tick();
     app.console?.tick();
-    requestAnimationFrame(panelLoop);
+    requestAnimationFrame(chrome);
   };
-  requestAnimationFrame(panelLoop);
+  requestAnimationFrame(chrome);
 }
 
 // -- keyboard --------------------------------------------------------------
@@ -324,26 +391,35 @@ window.addEventListener('keydown', async (event) => {
   switch (event.key) {
     case ' ':
       event.preventDefault();
-      if (!gate.hidden) {
-        gateStart.click();
-      } else {
+      // Nothing to toggle until a piece has been played into the stage.
+      if (!app.transport) break;
+      {
         const playing = await app.transport.toggle();
         document.getElementById('ctl-play').textContent = playing ? 'pause' : 'play';
       }
       break;
     case 'p':
     case 'P':
-      app.panel?.toggle();
+      // Only meaningful on the stage; the state machine refuses it elsewhere.
+      views.toggleOverlay('panel');
       break;
     case 'F3':
       event.preventDefault();
-      app.studio?.toggle();
+      // Between the two views rather than an overlay on top of one. Entering the
+      // studio pauses: design time is quiet, performance time sounds.
+      if (views.inStudio) {
+        if (app.reader) views.go('stage');
+      } else {
+        app.transport?.pause();
+        views.go('studio');
+        app.studio?.refreshFromServer();
+      }
       break;
     case 'F2':
       // A function key, so the keyboard never claims it -- claims() only takes
       // single-character keys.
       event.preventDefault();
-      app.console?.toggle();
+      views.toggleOverlay('console');
       break;
     case 'f':
     case 'F':
@@ -362,5 +438,16 @@ window.addEventListener('keydown', async (event) => {
 window.addEventListener('keyup', (event) => {
   app.keyboard?.release(event);
 });
+
+// A held note whose key-up lands in another window would sustain forever, since
+// nothing on this page ever hears the release. Both events fire for alt-tab and
+// for a click outside, and panic() is idempotent.
+for (const event of ['blur', 'visibilitychange']) {
+  window.addEventListener(event, () => {
+    if (document.visibilityState !== 'visible' || event === 'blur') app.keyboard?.panic();
+  });
+}
+
+document.getElementById('failure-dismiss').addEventListener('click', () => views.clearError());
 
 boot();

@@ -28,6 +28,31 @@ export function midiToHz(midi) {
   return 440 * 2 ** ((midi - 69) / 12);
 }
 
+/**
+ * Per-waveform gain, so the four timbres land at comparable loudness.
+ *
+ * Sine was reported as "not sounding", and it was not broken -- it was much
+ * quieter than the others at the same amplitude, which under eight sawtooth data
+ * voices amounts to inaudible. A sine puts all its energy in the fundamental; a
+ * square and a sawtooth spread it across a harmonic series that reads as far
+ * louder to the ear, and lower fundamentals lose further ground to the
+ * equal-loudness contours.
+ *
+ * Normalized *down* from sine rather than boosting sine up: scaling the bright
+ * ones has no headroom problem, while multiplying an already-0.9 velocity would
+ * clip. The overall keyboard therefore sits lower, which the bus gain below
+ * compensates for once rather than per note.
+ */
+const WAVEFORM_GAIN = {
+  sine: 1.0,
+  triangle: 0.82,
+  sawtooth: 0.5,
+  square: 0.42,
+};
+
+/** How long a held note may sustain before it is released for you. */
+const MAX_SUSTAIN_SECONDS = 30;
+
 /** Quantizing transfer curve: the 8->4->2 bit staircase, as a WaveShaper. */
 function crushCurve(bits, length = 4096) {
   const steps = 2 ** Math.max(1, Math.min(16, bits));
@@ -271,7 +296,9 @@ export class AudioEngine {
     // Both paths are wired permanently and switched by gain rather than by
     // re-patching: toggling a connection mid-note clicks, a gain ramp does not.
     this.keyboardBus = ctx.createGain();
-    this.keyboardBus.gain.value = 1;
+    // Above unity, because WAVEFORM_GAIN normalizes every timbre downward from
+    // sine. Applied once here rather than per note, where it would clip.
+    this.keyboardBus.gain.value = 1.6;
     this.keyClean = ctx.createGain();
     this.keyCrushed = ctx.createGain();
     this.keyClean.gain.value = this.keyboardCrushed ? 0 : 1;
@@ -355,31 +382,95 @@ export class AudioEngine {
    * @param {number} velocity  0..1
    * @param {object} options   {waveform, attack, decay, when}
    */
+  /**
+   * Play one note, now. Returns a handle so it can be released later.
+   *
+   * A node per note here, unlike the data voices -- and for the opposite
+   * reason. Data voices are eight continuous streams, so persistent oscillators
+   * avoid constant allocation; played notes are short, sparse and polyphonic,
+   * so spawning one per press is both simpler and correct. Ten fingers cannot
+   * out-allocate a garbage collector.
+   *
+   * **Sustain.** With `sustain > 0` the envelope decays to that level and holds
+   * there until `release()` is called, which is what makes holding a key hold a
+   * note. With `sustain = 0` it decays to silence and stops itself -- the
+   * original percussive bleep, still available because a bleep is a legitimate
+   * choice rather than a limitation.
+   *
+   * A held note that is never released would run forever, so there are two
+   * backstops: a hard ceiling on sustain length, and the caller releasing on
+   * window blur (alt-tabbing mid-chord otherwise leaves a drone behind).
+   *
+   * @param {number} midi      MIDI note number
+   * @param {number} velocity  0..1
+   * @param {object} options   {waveform, attack, decay, sustain, release, when}
+   * @returns {null|{midi, freq, release: Function, released: boolean}}
+   */
   playNote(midi, velocity = 0.7, options = {}) {
     if (!this.started) return null;
     const ctx = this.ctx;
     const when = options.when ?? ctx.currentTime + 0.004;
     const attack = options.attack ?? 0.003;
     const decay = options.decay ?? 0.22;
+    const sustain = Math.max(0, Math.min(1, options.sustain ?? 0));
+    const releaseTime = Math.max(0.01, options.release ?? 0.12);
     const freq = midiToHz(midi);
 
     const osc = ctx.createOscillator();
     osc.type = options.waveform ?? 'square';
     osc.frequency.value = Math.max(18, Math.min(ctx.sampleRate / 2.2, freq));
 
+    // Timbre compensation, so switching waveform changes the colour and not the
+    // volume. See WAVEFORM_GAIN.
+    const peak = Math.max(0, Math.min(1, velocity)) * (WAVEFORM_GAIN[osc.type] ?? 0.6);
+    const sustainLevel = peak * sustain;
+
     const gain = ctx.createGain();
-    gain.gain.value = 0;
     gain.gain.setValueAtTime(0, when);
-    gain.gain.linearRampToValueAtTime(Math.max(0, Math.min(1, velocity)), when + attack);
-    // Exponential-ish tail via setTargetAtTime, then a hard zero so the node can
-    // actually be stopped -- setTargetAtTime never truly reaches its target.
-    gain.gain.setTargetAtTime(0.0001, when + attack, decay * 0.4);
-    const end = when + attack + decay + 0.05;
-    gain.gain.linearRampToValueAtTime(0, end);
+    gain.gain.linearRampToValueAtTime(peak, when + attack);
+
+    let end = null;
+    if (sustainLevel > 0.0005) {
+      // Decay toward the sustain level and stay. setTargetAtTime approaches
+      // asymptotically, which is exactly right for a hold: it never schedules an
+      // end, so there is nothing to cancel when the key comes up.
+      gain.gain.setTargetAtTime(sustainLevel, when + attack, Math.max(0.01, decay * 0.4));
+      end = when + attack + MAX_SUSTAIN_SECONDS;
+    } else {
+      // No sustain: decay to silence and stop. One linear ramp to a hard zero at
+      // the end, because setTargetAtTime alone never reaches its target and the
+      // node could not be stopped cleanly.
+      gain.gain.setTargetAtTime(0.0001, when + attack, Math.max(0.01, decay * 0.4));
+      end = when + attack + decay + 0.05;
+      gain.gain.linearRampToValueAtTime(0, end);
+    }
 
     osc.connect(gain).connect(this.keyboardBus);
     osc.start(when);
     osc.stop(end);
+
+    const handle = {
+      midi,
+      freq,
+      when,
+      released: sustainLevel <= 0.0005,
+      release: (at) => {
+        if (handle.released) return;
+        handle.released = true;
+        const time = Math.max(at ?? ctx.currentTime, when + attack);
+        try {
+          gain.gain.cancelScheduledValues(time);
+          // Anchored at the value it actually has: without this the ramp starts
+          // from whatever the last scheduled event said, which after a
+          // setTargetAtTime is not where the signal is.
+          gain.gain.setValueAtTime(gain.gain.value, time);
+          gain.gain.linearRampToValueAtTime(0, time + releaseTime);
+          osc.stop(time + releaseTime + 0.02);
+        } catch {
+          // The context can be closed, or the note already stopped, mid-release.
+        }
+      },
+    };
 
     if (this.journalEnabled) {
       this.journal.push({
@@ -388,19 +479,24 @@ export class AudioEngine {
         name: 'keyboard',
         waveform: osc.type,
         freq,
-        amp: velocity,
+        amp: peak,
         attack,
-        hold: decay,
+        hold: sustainLevel > 0 ? releaseTime : decay,
+        sustain: sustainLevel,
         retrigger: true,
         midi,
         calls: [
           `osc.type = '${osc.type}'`,
           `osc.frequency.value = ${freq.toFixed(3)}`,
-          `gain.gain.linearRampToValueAtTime(${velocity.toFixed(3)}, t + ${attack})`,
+          `gain.gain.linearRampToValueAtTime(${peak.toFixed(3)}, t + ${attack})`,
+          sustainLevel > 0
+            ? `gain.gain.setTargetAtTime(${sustainLevel.toFixed(3)}, t + ${attack}, ...)  // holds`
+            : `gain.gain.setTargetAtTime(0, t + ${attack}, ...)  // decays`,
         ],
       });
       this._trimJournal();
     }
+
     osc.onended = () => {
       try {
         gain.disconnect();
@@ -409,7 +505,7 @@ export class AudioEngine {
         // Already torn down -- a context close races with the last few notes.
       }
     };
-    return { midi, freq, when, end };
+    return handle;
   }
 
   /**
