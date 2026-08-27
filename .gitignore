@@ -1,6 +1,9 @@
-# --- design document (kept out of the repo on purpose) ---
+# --- working documents (kept out of the repo on purpose) ---
 SPECS.en.md
 SPECS*.md
+# The implementation notes: decisions, dead ends and the reasoning behind them.
+# Useful while building, not part of what the project ships.
+NOTES.md
 
 # --- generated streams / renders ---
 out/
