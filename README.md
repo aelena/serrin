@@ -251,6 +251,46 @@ dominant, whole tone, diminished, chromatic. `mod_reduce` maps values onto scale
 so `pentatonic_minor` is the default and full chromaticism is a deliberate
 choice.
 
+### The studio
+
+<kbd>F3</kbd>, or `?view=studio`. A full-viewport view for configuring a piece
+*before* generating it.
+
+The panel and the studio deliberately do not look alike. The panel is
+**performance time** — things you touch while a piece plays, reachable without
+covering the stage. The studio is **design time** — the source, the chain, the
+mapping, the grid. They share the state, not the layout; merging them would
+produce one surface that is bad at both.
+
+What it edits:
+
+- **source** — path, and a column picker that shows *why* each column would be
+  dropped: constant, monotonic, or unparseable. Serrin does not clean data, so
+  the honest thing is to name the problem and let you fix it upstream.
+- **tempo** — bpm, subdivision, swing, metre, with the resulting frame rate shown.
+- **pedal chain** — add, remove, reorder, edit every parameter, set the intensity
+  each pedal switches on at.
+- **mapping** — the note range, frequency curve, gate threshold, glitch
+  threshold, channel rotation. The subjective layer §5 leaves open on purpose.
+- **envelope** — archetype, equation or a hand-drawn curve.
+- **piece** — title, notes, mode, loop policy, voice entry, seed override.
+- **performance** — keyboard settings now; the key map editor, sample list and
+  beat grid land here next.
+
+**The chain editor works, and that is not a contradiction.** Live pedal
+reorder/toggle is still pending because it needs the chain ported to JavaScript.
+Editing a chain here and *re-rendering through Python* needs no port at all — the
+browser is a front end for the pipeline, and the pedals stay in one place.
+
+The studio holds a **working copy** of the manifest, so edits are local until
+saved and it can say "unsaved" honestly. Rendering reads the file from disk, so a
+dirty piece is saved first — announced rather than silent, because "render"
+quietly writing your edits would be a surprise.
+
+Every list in the UI — pedals, their parameters, scales, archetypes, git metrics
+— comes from `GET /api/catalog`. Hardcoding them in JavaScript would mean a pedal
+added in Python is silently unreachable from the studio.
+
 ### The console
 
 <kbd>F2</kbd> opens a devtools drawer. The panel answers *what should this do*;
@@ -613,6 +653,7 @@ No framework, no bundler. ES modules straight from `web/js/`.
 | `recorder.js` | MediaRecorder takes, audio or audio+video |
 | `source.js` | uploads and repo paths, posted to the render endpoint |
 | `console.js` | the devtools drawer, and the JS reconstruction |
+| `studio.js` | the design-time view: piece config, chain editor, album |
 | `panel.js` | the author panel |
 | `main.js` | wiring, URL params, keyboard |
 
@@ -651,6 +692,11 @@ which it got. Equations: `arc`, `sigmoid`, `plateau`, `ramp`, `pulse`, `flat`.
 Archetypes: `full_arc`, `build_up`, `crescendo`, `climax`, `fade_out`,
 `dismantling`.
 
+Archetypes are **editable starting points, kept alongside the free curve** —
+not a replacement for it and not a candidate for removal. Both resolve to the
+same artifact, so keeping them costs nothing and they answer the common case.
+(That settles the last open question from §5.1.1 of the design document.)
+
 Drawing is Pointer Events with optional stylus pressure, and a live stroke is
 captured against the transport clock — so, on the open question in section 8:
 **yes, a live stroke is recordable and replays identically.** "Export stroke" in
@@ -678,7 +724,7 @@ mute a voice.
 python tests/run_all.py          # both suites, and they cross-check each other
 ```
 
-273 Python tests, 85 Node tests, plus a cross-language round trip. Weighted toward the two properties the aesthetic
+288 Python tests, 85 Node tests, plus a cross-language round trip. Weighted toward the two properties the aesthetic
 depends on: **determinism** (a promise that is not tested is a wish) and
 **invariants** (a pedal that breaks one fails hundreds of frames later, in the
 browser, which is a miserable way to find out).
@@ -712,11 +758,8 @@ data/  out/       inputs and renders (out/ is gitignored)
 
 Honest accounting of what is specified but not yet real:
 
-- **The studio view** — a fullscreen editor for the render layer, where the
-  keymap, samples, patterns and archetype get edited before generating. The
-  format and the endpoints are in; the UI is next.
-- **The keyboard's other three modes** — `notes`, `samples`, `beats`. They need
-  the studio view, which is why the piece format came first.
+- **The keyboard's other three modes** — `notes`, `samples`, `beats`, plus the
+  key map editor and sample upload they need. The studio has a place for them.
 - **Live pedal reorder/toggle** (§4.5). The chain is rendered offline in phase 1,
   so the panel's pedal list is read-only and shows which pedals the current
   intensity has *notionally* switched on. Real live manipulation needs the chain

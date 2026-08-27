@@ -135,6 +135,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         handlers = {
             "/api/pieces": lambda: {"pieces": list_pieces_api(params.get("folder", [None])[0])},
             "/api/piece": lambda: open_piece_api(params.get("folder", [None])[0]),
+            "/api/catalog": catalog_api,
+            "/api/columns": lambda: columns_api(
+                params.get("path", [None])[0], params.get("piece", [None])[0]
+            ),
         }
         self._dispatch(handlers.get(route))
 
@@ -164,6 +168,152 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # this is the author's own machine and hiding it helps nobody.
             traceback.print_exc()
             self._send_json(500, {"error": f"{type(exc).__name__}: {exc}"})
+
+
+# ---------------------------------------------------------------------------
+# the catalog: what the studio builds its forms from
+# ---------------------------------------------------------------------------
+def columns_api(path: str | None, piece_folder: str | None) -> dict:
+    """What a source offers, without rendering it.
+
+    The studio needs this to populate a column picker, and rendering the whole
+    file to find out would be absurd. It is also the honest place to show the
+    author *why* a column was dropped -- constant, monotonic, or unparseable --
+    since Serrin does not clean data and the author has to fix it upstream.
+    """
+    from serrin.ingest import (  # noqa: PLC0415
+        _parse_number,
+        monotonicity,
+        numeric_columns,
+        read_rows,
+        select_columns,
+    )
+    from serrin.ingest_git import branches  # noqa: PLC0415
+    from serrin.piece import Piece  # noqa: PLC0415
+
+    if piece_folder:
+        piece = Piece.load(_piece_folder(piece_folder))
+        source = piece.source_path
+        kind = piece.kind
+    elif path:
+        source = Path(path).expanduser()
+        kind = "git" if (source / ".git").exists() else "csv"
+    else:
+        raise ValueError("pass a path or a piece folder")
+
+    if not source.exists():
+        raise FileNotFoundError(f"no such source: {source}")
+
+    if kind == "git":
+        return {
+            "kind": "git",
+            "path": str(source),
+            "branches": [
+                {"name": name, "tip": stamp} for name, stamp in branches(source)
+            ],
+        }
+
+    header, rows = read_rows(source)
+    numeric = set(numeric_columns(header, rows))
+    chosen = set(select_columns(header, rows, None))
+
+    columns = []
+    for index, name in enumerate(header):
+        # The pipeline's own parser, not a stricter one. It pulls a number out of
+        # "45 ms" and out of "row12", so a column this endpoint called
+        # unparseable while ingestion happily read it would send the author
+        # hunting for a problem that is not there.
+        values = []
+        for row in rows:
+            if index < len(row):
+                parsed = _parse_number(row[index])
+                if parsed is not None:
+                    values.append(parsed)
+        reason = ""
+        if index not in numeric:
+            reason = "not numeric"
+        elif len(values) < 2:
+            reason = "too few values"
+        elif max(values) == min(values):
+            reason = "constant — a flat line is not a voice"
+        elif monotonicity(values) > 0.98:
+            reason = "monotonic — variance but no shape, like a timestamp"
+        columns.append(
+            {
+                "index": index,
+                "name": name,
+                "numeric": index in numeric,
+                "chosen": index in chosen,
+                "reason": reason,
+                "low": min(values) if values else None,
+                "high": max(values) if values else None,
+            }
+        )
+
+    return {
+        "kind": "csv",
+        "path": str(source),
+        "rows": len(rows),
+        "columns": columns,
+        "auto_chosen": [header[i] for i in sorted(chosen)],
+    }
+
+
+def catalog_api() -> dict:
+    """Every list the studio needs, from the modules that own them.
+
+    Served rather than hardcoded in JavaScript. Duplicating these would mean a
+    pedal added in Python is silently unreachable from the studio -- the same
+    drift the tempo and voice-activation cross-checks exist to prevent, except
+    here it would be invisible rather than merely untested.
+    """
+    from serrin import pedals  # noqa: PLC0415
+    from serrin.pedals import base as pedal_base  # noqa: PLC0415
+    from serrin.envelope import ARCHETYPES, EQUATIONS  # noqa: PLC0415
+    from serrin.export import GLYPHS, MappingConfig  # noqa: PLC0415
+    from serrin.ingest_git import METRICS, TRAVERSALS  # noqa: PLC0415
+    from serrin.piece import BINDING_KINDS, DEFAULT_KEYMAP_ROWS  # noqa: PLC0415
+    from serrin.scales import DEFAULT_SCALE, SCALE_BANK, resolve  # noqa: PLC0415
+    from serrin.stream import MAX_VOICES  # noqa: PLC0415
+    from serrin.tempo import NOTE_FRACTIONS, SUBDIVISIONS  # noqa: PLC0415
+
+    return {
+        "pedals": [
+            {
+                "name": pedal.name,
+                # First line only: the studio shows it as help text, and the full
+                # docstring is a paragraph.
+                "summary": (pedal.doc or "").strip().splitlines()[0] if pedal.doc else "",
+                # Doubles as the parameter schema -- the defaults dict is the
+                # honest description of what a pedal accepts.
+                "params": pedal.defaults,
+            }
+            for pedal in pedals.catalog()
+        ],
+        "lfo_shapes": list(pedal_base.SHAPES),
+        "scales": {
+            name: {"intervals": intervals, "offsets": resolve(name)[0]}
+            for name, intervals in sorted(SCALE_BANK.items())
+        },
+        "default_scale": DEFAULT_SCALE,
+        "archetypes": sorted(ARCHETYPES),
+        "equations": sorted(EQUATIONS),
+        "git": {"metrics": METRICS, "traversals": list(TRAVERSALS)},
+        "tempo": {
+            "subdivisions": list(SUBDIVISIONS),
+            "note_fractions": NOTE_FRACTIONS,
+        },
+        "mapping_defaults": MappingConfig().to_json(),
+        "glyphs": GLYPHS,
+        "max_voices": MAX_VOICES,
+        "binding_kinds": list(BINDING_KINDS),
+        "keymap_rows": [list(row) for row in DEFAULT_KEYMAP_ROWS],
+        "aggregations": ["mean", "max", "min", "sum", "first", "last", "range"],
+        "loop_policies": ["vary", "loop", "pingpong", "once"],
+        "voice_entry": ["variance", "columns", "sparse"],
+        "modes": ["closed", "endless"],
+        "waveforms": ["sawtooth", "square", "triangle", "sine"],
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -24,7 +24,8 @@
         <button id="gate-start" disabled>begin</button>
         <p class="hint">
           browsers will not make sound until you ask them to ·
-          <kbd>space</kbd> play/pause · <kbd>p</kbd> panel · <kbd>1</kbd>–<kbd>8</kbd> mute voice
+          <kbd>space</kbd> play/pause · <kbd>p</kbd> panel · <kbd>F2</kbd> console ·
+          <kbd>F3</kbd> studio
         </p>
         <p class="error" id="gate-error" hidden></p>
       </div>
@@ -98,6 +99,7 @@
             <input id="ctl-source-trace" type="checkbox" checked /> trace the render
           </label>
           <button id="ctl-console-open">open console</button>
+          <button id="ctl-studio-open">open studio</button>
         </div>
         <p class="micro" id="source-readout">—</p>
       </section>
@@ -336,6 +338,38 @@
         <ol id="pedal-list" class="pedals"></ol>
       </section>
     </aside>
+
+    <!--
+      The studio. A full-viewport view rather than another column in the panel:
+      the panel is performance time (things you touch while a piece plays) and
+      this is design time (things you set and then leave alone). Same state,
+      different layout, because merging them makes one surface bad at both.
+    -->
+    <main id="studio" class="studio" hidden aria-label="studio">
+      <header class="studio-head">
+        <strong>studio</strong>
+        <span id="studio-title" class="studio-piece">no piece open</span>
+        <span id="studio-state" class="studio-state"></span>
+        <span class="spacer"></span>
+        <button id="studio-save" disabled>save</button>
+        <button id="studio-render" disabled>render</button>
+        <button id="studio-play" disabled>play it</button>
+        <button id="studio-close" title="back to the stage (F3)">×</button>
+      </header>
+      <p id="studio-message" class="studio-message"></p>
+      <div class="studio-columns">
+        <aside class="studio-side">
+          <h3>pieces</h3>
+          <div id="studio-pieces" class="pieces"></div>
+          <button id="studio-new">new piece…</button>
+          <p class="dim">
+            an album is a folder of pieces. point the server at yours with
+            <code>--pieces</code>, and version-control it yourself.
+          </p>
+        </aside>
+        <div id="studio-body" class="studio-main"></div>
+      </div>
+    </main>
 
     <!--
       The console. A drawer rather than another column in the panel: the panel

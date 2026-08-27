@@ -348,6 +348,140 @@ class TestPieceEndpoints(unittest.TestCase):
             serve.open_piece_api("no-such-piece")
 
 
+class TestCatalogEndpoint(unittest.TestCase):
+    """The studio builds its forms from this, so it must not drift from Python."""
+
+    def setUp(self):
+        self.catalog = serve.catalog_api()
+
+    def test_it_lists_every_pedal_with_its_parameters(self):
+        # Served rather than hardcoded in JavaScript: a pedal added in Python
+        # would otherwise be silently unreachable from the studio.
+        from serrin import pedals
+
+        names = [entry["name"] for entry in self.catalog["pedals"]]
+        self.assertEqual(sorted(names), sorted(pedals.REGISTRY))
+        for entry in self.catalog["pedals"]:
+            self.assertEqual(entry["params"], pedals.get(entry["name"]).defaults)
+            self.assertTrue(entry["summary"], f"{entry['name']} has no summary")
+
+    def test_it_lists_every_scale_with_offsets(self):
+        from serrin.scales import SCALE_BANK, resolve
+
+        self.assertEqual(sorted(self.catalog["scales"]), sorted(SCALE_BANK))
+        for name, entry in self.catalog["scales"].items():
+            self.assertEqual(entry["offsets"], resolve(name)[0])
+
+    def test_it_carries_the_lists_the_ui_needs(self):
+        for key in (
+            "archetypes",
+            "equations",
+            "lfo_shapes",
+            "aggregations",
+            "loop_policies",
+            "voice_entry",
+            "modes",
+            "waveforms",
+            "binding_kinds",
+            "keymap_rows",
+        ):
+            self.assertTrue(self.catalog[key], f"{key} is empty")
+
+    def test_it_carries_the_mapping_defaults(self):
+        from serrin.export import MappingConfig
+
+        self.assertEqual(self.catalog["mapping_defaults"], MappingConfig().to_json())
+
+    def test_the_voice_ceiling_comes_from_the_module_that_owns_it(self):
+        from serrin.stream import MAX_VOICES
+
+        self.assertEqual(self.catalog["max_voices"], MAX_VOICES)
+
+    def test_git_metrics_carry_their_descriptions(self):
+        from serrin.ingest_git import METRICS
+
+        self.assertEqual(sorted(self.catalog["git"]["metrics"]), sorted(METRICS))
+        self.assertTrue(all(self.catalog["git"]["metrics"].values()))
+
+    def test_it_is_json_serialisable(self):
+        # It goes over the wire; a stray tuple or Path would 500 at request time.
+        json.dumps(self.catalog)
+
+
+class TestColumnsEndpoint(unittest.TestCase):
+    """What a source offers, without rendering it."""
+
+    def setUp(self):
+        self.workspace = ROOT / "out" / ".test-columns"
+        self.workspace.mkdir(parents=True, exist_ok=True)
+        self.csv = self.workspace / "probe.csv"
+        # cpu varies, flat is constant, ramp is monotonic, label has no digits
+        # at all. "row12" would NOT qualify as non-numeric: the pipeline's parser
+        # pulls the 12 out of it, and this endpoint reports what the pipeline
+        # sees rather than what a stricter parser would.
+        rows = ["cpu,flat,ramp,label"]
+        words = ["alpha", "beta", "gamma", "delta"]
+        rows += [
+            f"{20 + (i * 7) % 60},7,{i},{words[i % len(words)]}" for i in range(60)
+        ]
+        self.csv.write_text(chr(10).join(rows), encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.workspace, ignore_errors=True)
+
+    def test_it_reports_why_each_column_was_dropped(self):
+        # Serrin does not clean data, so the author has to be told what is wrong
+        # with a column rather than left wondering where their voice went.
+        payload = serve.columns_api(str(self.csv), None)
+        reasons = {c["name"]: c["reason"] for c in payload["columns"]}
+        self.assertEqual(reasons["cpu"], "")
+        self.assertIn("constant", reasons["flat"])
+        self.assertIn("monotonic", reasons["ramp"])
+        self.assertIn("not numeric", reasons["label"])
+
+    def test_it_marks_what_automatic_selection_would_choose(self):
+        payload = serve.columns_api(str(self.csv), None)
+        chosen = [c["name"] for c in payload["columns"] if c["chosen"]]
+        self.assertEqual(chosen, ["cpu"])
+        self.assertEqual(payload["auto_chosen"], ["cpu"])
+
+    def test_a_column_the_pipeline_can_parse_is_not_called_unparseable(self):
+        # "row12" reads as 12 to ingestion, so it is monotonic rather than
+        # non-numeric -- and the endpoint has to agree with ingestion.
+        other = self.workspace / "loose.csv"
+        other.write_text(
+            chr(10).join(["v,tag"] + [f"{i % 9},row{i}" for i in range(40)]),
+            encoding="utf-8",
+        )
+        reasons = {c["name"]: c["reason"] for c in serve.columns_api(str(other), None)["columns"]}
+        self.assertNotIn("not numeric", reasons["tag"])
+        self.assertIn("monotonic", reasons["tag"])
+
+    def test_it_reports_the_range_of_each_column(self):
+        payload = serve.columns_api(str(self.csv), None)
+        cpu = next(c for c in payload["columns"] if c["name"] == "cpu")
+        self.assertIsNotNone(cpu["low"])
+        self.assertLess(cpu["low"], cpu["high"])
+
+    def test_it_counts_the_rows(self):
+        self.assertEqual(serve.columns_api(str(self.csv), None)["rows"], 60)
+
+    def test_a_missing_source_is_a_404_not_a_500(self):
+        with self.assertRaises(FileNotFoundError):
+            serve.columns_api(str(self.workspace / "nope.csv"), None)
+
+    def test_it_needs_something_to_read(self):
+        with self.assertRaises(ValueError):
+            serve.columns_api(None, None)
+
+    @unittest.skipUnless(shutil.which("git"), "git is not on PATH")
+    def test_a_repository_reports_its_branches(self):
+        payload = serve.columns_api(str(ROOT), None)
+        self.assertEqual(payload["kind"], "git")
+        self.assertTrue(payload["branches"])
+        self.assertIn("main", [b["name"] for b in payload["branches"]])
+
+
 class TestSeedDispatch(unittest.TestCase):
     """The bug the endpoint exposed, pinned at its real location."""
 

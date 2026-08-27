@@ -22,6 +22,7 @@ import { Transport } from './transport.js';
 import { VisualEngine } from './visual.js';
 import { DebugConsole } from './console.js';
 import { Panel } from './panel.js';
+import { Studio } from './studio.js';
 
 /**
  * The presets the panel can switch between. Each needs a rendered pair in out/.
@@ -80,6 +81,7 @@ const app = {
   keyboard: null,
   recorder: null,
   console: null,
+  studio: null,
 
   /** Replace the intensity curve. Stroke, equation or archetype -- same call. */
   setEnvelope(envelope) {
@@ -207,6 +209,9 @@ function adopt(reader) {
   // Built once and re-pointed, like the panel: it owns the log, and a preset
   // switch should not erase what happened before it.
   if (!app.console) app.console = new DebugConsole(app);
+  // Built once: it holds a working copy of the manifest, and rebuilding it on a
+  // preset switch would silently discard unsaved edits.
+  if (!app.studio) app.studio = new Studio(app);
   app.console.log(
     `loaded ${reader.meta.label ?? 'stream'} — ${reader.voiceCount} voices, ` +
       `${reader.length} frames, ${reader.tempo.describe()}`,
@@ -260,6 +265,10 @@ async function boot() {
 
   gateStart.addEventListener('click', begin);
   if (params.get('autoplay') === '1') begin().catch(showError);
+  if (params.get('view') === 'studio') {
+    gate.hidden = true;
+    app.studio.toggle(true);
+  }
 
   // Panel refresh runs on its own rAF so the engines' loop stays clean.
   const panelLoop = () => {
@@ -303,6 +312,10 @@ window.addEventListener('keydown', async (event) => {
     case 'p':
     case 'P':
       app.panel?.toggle();
+      break;
+    case 'F3':
+      event.preventDefault();
+      app.studio?.toggle();
       break;
     case 'F2':
       // A function key, so the keyboard never claims it -- claims() only takes

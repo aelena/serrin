@@ -209,6 +209,7 @@ export class Panel {
     };
 
     $('ctl-console-open').addEventListener('click', () => app.console?.toggle(true));
+    $('ctl-studio-open').addEventListener('click', () => app.studio?.toggle(true));
 
     $('ctl-source-csv').addEventListener('click', () => $('ctl-source-file').click());
     $('ctl-source-file').addEventListener('change', async (event) => {
