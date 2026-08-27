@@ -10,15 +10,20 @@
  *
  * Structured as a mode registry because the modes are arriving in stages:
  *
- *   random   -- implemented. Any key draws a note from the piece's own scale.
- *   notes    -- planned. Fixed key -> note maps, for playing actual melodies.
- *   samples  -- planned. Key -> sample. Needs a map editor, as does `notes`.
+ *   random   -- any key draws a note from the piece's own scale.
+ *   notes    -- the piece's key map. Fixed positions, for playing melodies.
+ *   samples  -- planned. Key -> sample.
  *   beats    -- planned. Step sequencing and live recording over the stream.
  *
- * The three planned modes are listed rather than hidden so the shape of the
- * thing is visible, but they are inert and say so. Nothing here pretends.
+ * The two planned modes are listed rather than hidden so the shape of the thing
+ * is visible, but they are inert and say so. Nothing here pretends.
+ *
+ * `notes` differs from `random` in one way worth naming: it claims only the keys
+ * the map actually binds. An unbound key falls through to the piece's own
+ * shortcuts, which makes a sparse map usable rather than a trap.
  */
 
+import { describeBinding, resolveBinding } from './keymap.js';
 import { hash32, rng } from './reader.js';
 
 /** The piano, in MIDI. A0 to C8 -- the bound the register options live inside. */
@@ -40,7 +45,7 @@ export const REGISTERS = {
 
 export const MODES = {
   random: { label: 'random · any key, a note in the scale', ready: true },
-  notes: { label: 'note map · key → fixed note (pending)', ready: false },
+  notes: { label: "note map · the piece's own layout", ready: true },
   samples: { label: 'samples · key → sample (pending)', ready: false },
   beats: { label: 'beats · sequence and record (pending)', ready: false },
 };
@@ -80,6 +85,11 @@ export class KeyboardEngine {
     this.held = new Map(); // key -> midi, so a key-up knows what it started
     this.onNote = null; // set by main.js for visual feedback
 
+    //: The piece's map, by physical key position. Empty until a piece is loaded.
+    this.keymap = {};
+    //: Live octave shift, for reaching outside the map without editing it.
+    this.octaveOffset = 0;
+
     this.adopt(reader);
   }
 
@@ -101,6 +111,35 @@ export class KeyboardEngine {
     this.pressCount = 0;
     this.lastNote = null;
     this._rebuildPool();
+  }
+
+  /**
+   * Load a key map, usually from the piece's performance layer.
+   *
+   * Kept separate from `adopt` because a map belongs to the *piece* and a scale
+   * belongs to the *render*: switching render without switching piece should not
+   * discard the layout the author built.
+   */
+  setKeymap(keymap) {
+    this.keymap = keymap && typeof keymap === 'object' ? { ...keymap } : {};
+    return Object.keys(this.keymap).length;
+  }
+
+  /** What a position plays right now, given the scale and the octave shift. */
+  bindingFor(code) {
+    return this.keymap[code] ?? null;
+  }
+
+  describeKey(code) {
+    return describeBinding(this.keymap[code], this.scale, this.octaveOffset);
+  }
+
+  /** Shift the whole map by octaves. Returns the new offset. */
+  shiftOctave(delta) {
+    // Clamped: three octaves either way already exceeds the piano from any
+    // sensible root, and unbounded shifting just produces silence.
+    this.octaveOffset = Math.max(-3, Math.min(3, this.octaveOffset + delta));
+    return this.octaveOffset;
   }
 
   // -- the note pool -------------------------------------------------------
@@ -161,14 +200,24 @@ export class KeyboardEngine {
   }
 
   describe() {
-    const bounds = this.registerBounds();
     const source =
       this.scale.source === 'default' || this.scale.source === 'fallback'
         ? ` (the piece declares none — assuming ${this.scale.name})`
         : ` from ${this.scale.source}`;
+    const shift = this.octaveOffset ? ` · octave ${this.octaveOffset > 0 ? '+' : ''}${this.octaveOffset}` : '';
+
+    if (this.mode === 'notes') {
+      const bound = Object.keys(this.keymap).length;
+      if (!bound) {
+        return `${this.scale.name}${source} · no key map — build one in the studio (F3)`;
+      }
+      return `${this.scale.name}${source} · ${bound} keys mapped${shift}`;
+    }
+
+    const bounds = this.registerBounds();
     return (
       `${this.scale.name}${source} · ${this.pool.length} notes ` +
-      `between ${noteName(bounds.low)} and ${noteName(bounds.high)}`
+      `between ${noteName(bounds.low)} and ${noteName(bounds.high)}${shift}`
     );
   }
 
@@ -179,8 +228,13 @@ export class KeyboardEngine {
     if (event.ctrlKey || event.metaKey || event.altKey) return false;
     if (RESERVED.has(event.key)) return false;
     // Single-character keys only: letters, digits, punctuation. Excludes the
-    // function keys and arrows, which later modes will want for transposing.
-    return event.key.length === 1;
+    // function keys and the arrows, which shift octaves instead.
+    if (event.key.length !== 1) return false;
+    // In `notes` an unbound position is not ours -- it falls through to the
+    // piece's shortcuts, so a map covering nine keys does not swallow the other
+    // thirty. `random` has no map and claims everything.
+    if (this.mode === 'notes') return Boolean(this.keymap[event.code]);
+    return true;
   }
 
   /**
@@ -209,7 +263,14 @@ export class KeyboardEngine {
       decay: 0.22,
     });
 
-    const played = { midi, name: noteName(midi), key: event.key, mode: this.mode };
+    const played = {
+      midi,
+      name: noteName(midi),
+      key: event.key,
+      code: event.code,
+      mode: this.mode,
+      binding: this.keymap[event.code] ?? null,
+    };
     this.onNote?.(played);
     return played;
   }
@@ -228,15 +289,33 @@ export class KeyboardEngine {
     switch (this.mode) {
       case 'random':
         return this._randomNote();
+      case 'notes':
+        return this._mappedNote(event);
       // The planned modes are unreachable -- `claims()` gates on `ready` -- but
       // spelled out so the next commit has an obvious place to land.
-      case 'notes':
       case 'samples':
       case 'beats':
         return null;
       default:
         return null;
     }
+  }
+
+  /**
+   * The note this physical position is bound to.
+   *
+   * Sample and pattern bindings resolve to something that is not a note, and
+   * nothing can play them yet -- so they report themselves rather than quietly
+   * falling back to a pitch, which would make a half-built map sound finished.
+   */
+  _mappedNote(event) {
+    const resolved = resolveBinding(this.keymap[event.code], this.scale, this.octaveOffset);
+    if (!resolved) return null;
+    if (resolved.kind !== 'note') {
+      this.lastSkipped = resolved;
+      return null;
+    }
+    return resolved.midi;
   }
 
   /**

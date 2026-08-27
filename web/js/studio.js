@@ -21,6 +21,16 @@
  * because "render" quietly writing your edits would be a surprise.
  */
 
+import {
+  ALL_KEYS,
+  KEY_ROWS,
+  chromaticKeymap,
+  defaultKeymap,
+  describeBinding,
+  fallbackLabel,
+  layoutLabels,
+  noteName,
+} from './keymap.js';
 import { requestRender } from './source.js';
 
 const $ = (id) => document.getElementById(id);
@@ -60,6 +70,15 @@ export class Studio {
     this.columns = null;
     this.dirty = false;
     this.busy = false;
+    //: The author's own key labels, so the editor shows their keyboard while
+    //: still storing positions. Filled once, asynchronously.
+    this.labels = Object.fromEntries(ALL_KEYS.map((code) => [code, fallbackLabel(code)]));
+    this.selectedKey = null;
+
+    layoutLabels().then((labels) => {
+      this.labels = labels;
+      if (this.visible) this.paint();
+    });
 
     $('studio-close').addEventListener('click', () => this.toggle(false));
     $('studio-new').addEventListener('click', () => this.createPiece());
@@ -271,18 +290,28 @@ export class Studio {
   /**
    * Push the piece's performance layer into the live engines.
    *
-   * Only the parts that exist yet. The keymap, samples and patterns arrive with
-   * the keyboard modes; wiring them here now would be scaffolding pretending to
-   * be a feature.
+   * Samples and patterns are still inert -- their modes come next -- so only the
+   * key map and the keyboard settings cross over. Wiring the rest now would be
+   * scaffolding pretending to be a feature.
    */
   applyPerformance() {
     const performance = this.manifest?.performance ?? {};
     const keyboard = performance.keyboard ?? {};
-    if (this.app.keyboard) {
-      if (keyboard.register) this.app.keyboard.setRegister(keyboard.register);
-      if (typeof keyboard.level === 'number') this.app.keyboard.level = keyboard.level;
-      if (keyboard.waveform) this.app.keyboard.waveform = keyboard.waveform;
+    if (!this.app.keyboard) return;
+
+    const bound = this.app.keyboard.setKeymap(performance.keymap);
+    if (keyboard.mode) this.app.keyboard.setMode(keyboard.mode);
+    if (keyboard.register) this.app.keyboard.setRegister(keyboard.register);
+    if (typeof keyboard.level === 'number') this.app.keyboard.level = keyboard.level;
+    if (keyboard.waveform) this.app.keyboard.waveform = keyboard.waveform;
+
+    if (bound) {
+      this.app.console?.log(
+        `key map loaded: ${bound} positions${keyboard.mode === 'notes' ? '' : ' (switch the keyboard to notes mode to play it)'}`,
+        'system',
+      );
     }
+    this.app.panel?._paintKeyboard?.();
   }
 
   // -- editing -------------------------------------------------------------
@@ -330,6 +359,7 @@ export class Studio {
           this._envelope(),
           this._pieceSettings(),
           this._performance(),
+          this._keymapEditor(),
         ].join('')
       : '<p class="dim">pick a piece on the left, or create one.</p>';
     if (this.manifest) this._wireBody();
@@ -654,25 +684,148 @@ export class Studio {
 
   _performance() {
     const performance = this.get('performance', {}) || {};
-    const keys = Object.keys(performance.keymap ?? {}).length;
     const samples = (performance.samples ?? []).length;
     const patterns = (performance.patterns ?? []).length;
     return this._section(
       'performance',
       `<div class="row">
-         ${this._select('keyboard register', 'performance.keyboard.register',
+         ${this._select('mode', 'performance.keyboard.mode', ['', 'random', 'notes'])}
+         ${this._select('register', 'performance.keyboard.register',
            ['', 'bass', 'mid', 'treble', 'full', 'piece'])}
          ${this._select('timbre', 'performance.keyboard.waveform', ['', ...this.catalog.waveforms])}
        </div>
        ${this._field('level', 'performance.keyboard.level', 'number', 'min="0" max="1" step="0.05"')}
-       <p class="dim">${keys} keys mapped · ${samples} samples · ${patterns} patterns</p>
-       <p class="dim">The key map editor, sample list and beat grid land here next.
-       Keys bind by physical position, so a map survives a change of layout, and
-       bindings are scale degrees rather than fixed pitches so they stay in key.</p>`,
+       <p class="dim">${samples} samples · ${patterns} patterns — the sample list and
+       beat grid land here next.</p>`,
       'What you play, as opposed to what the data produces. Samples live only ' +
       'here — the eight data voices stay oscillators, because the generated ' +
       'sound is meant to be primitive.',
     );
+  }
+
+  /**
+   * The key map editor.
+   *
+   * A picture of a keyboard, because a map *is* a layout and a table of
+   * `KeyA → degree 0` rows does not read as one. Click a position to select it,
+   * then bind it below.
+   *
+   * The labels come from the browser's layout map where it will say, so someone
+   * on a Spanish keyboard sees their own keys -- while what gets stored is still
+   * the physical position, which is what makes the map shareable.
+   */
+  _keymapEditor() {
+    const keymap = this.get('performance.keymap', {}) || {};
+    const scale = this._pieceScale();
+    const bound = Object.keys(keymap).length;
+
+    const rows = KEY_ROWS.map(
+      (row) =>
+        `<div class="keyrow">${row
+          .map((code) => {
+            const binding = keymap[code];
+            const selected = code === this.selectedKey ? ' on' : '';
+            const filled = binding ? ' bound' : '';
+            const label = this.labels[code] ?? fallbackLabel(code);
+            const detail = binding ? describeBinding(binding, scale).split(' · ')[0] : '';
+            return `<button class="key${selected}${filled}" data-key="${esc(code)}"
+              title="${esc(code)}${binding ? ` — ${esc(describeBinding(binding, scale))}` : ''}">
+              <b>${esc(label)}</b><span>${esc(detail)}</span></button>`;
+          })
+          .join('')}</div>`,
+    ).join('');
+
+    return this._section(
+      'key map',
+      `<p class="dim">${bound} of ${ALL_KEYS.length} positions bound ·
+        scale <b>${esc(scale.name)}</b> rooted at ${esc(noteName(scale.root))}</p>
+       <div class="keyboard">${rows}</div>
+       ${this._bindingEditor(keymap, scale)}
+       <div class="row">
+         <button data-action="keymap-default">two home rows</button>
+         <button data-action="keymap-chromatic">every key</button>
+         <button data-action="keymap-clear">clear</button>
+       </div>`,
+      'Bound by physical position, not by character — the map survives a change ' +
+      'of keyboard layout, and a piece is meant to be shareable. Bindings are ' +
+      'scale degrees rather than fixed pitches, so they stay in key when the ' +
+      "chain changes the piece's scale.",
+    );
+  }
+
+  /** The panel for whichever position is selected. */
+  _bindingEditor(keymap, scale) {
+    if (!this.selectedKey) {
+      return '<p class="dim">click a key to bind it.</p>';
+    }
+    const code = this.selectedKey;
+    const binding = keymap[code] ?? {};
+    const kind = binding.kind ?? 'degree';
+    const label = this.labels[code] ?? fallbackLabel(code);
+    const samples = (this.get('performance.samples', []) || []).map((s) => s.id);
+    const patterns = (this.get('performance.patterns', []) || []).map((p) => p.id);
+
+    const kinds = ['degree', 'note'];
+    // Only offered when the piece actually has something to point at: a binding
+    // to a sample that does not exist is refused on save anyway.
+    if (samples.length) kinds.push('sample');
+    if (patterns.length) kinds.push('pattern');
+
+    let fields = '';
+    if (kind === 'degree') {
+      fields =
+        `<label>degree<input type="number" data-bind="degree"
+          value="${binding.degree ?? 0}" step="1" /></label>
+         <label>octave<input type="number" data-bind="octave"
+          value="${binding.octave ?? 0}" step="1" min="-3" max="3" /></label>
+         <p class="dim">plays <b>${esc(describeBinding({ kind: 'degree', degree: binding.degree ?? 0, octave: binding.octave ?? 0 }, scale))}</b></p>`;
+    } else if (kind === 'note') {
+      const midi = binding.midi ?? 60;
+      fields =
+        `<label>MIDI note<input type="number" data-bind="midi" value="${midi}"
+          min="21" max="108" step="1" /></label>
+         <p class="dim">plays <b>${esc(noteName(midi))}</b> — a fixed pitch, so it
+         will not follow a change of scale.</p>`;
+    } else if (kind === 'sample') {
+      fields = `<label>sample<select data-bind="sample">
+        ${samples.map((id) => `<option value="${esc(id)}"${id === binding.sample ? ' selected' : ''}>${esc(id)}</option>`).join('')}
+      </select></label><p class="dim">not playable yet — the samples mode is next.</p>`;
+    } else {
+      fields = `<label>pattern<select data-bind="pattern">
+        ${patterns.map((id) => `<option value="${esc(id)}"${id === binding.pattern ? ' selected' : ''}>${esc(id)}</option>`).join('')}
+      </select></label><p class="dim">not playable yet — the beats mode is next.</p>`;
+    }
+
+    return `<div class="binding">
+      <h4>${esc(label)} <span class="dim">(${esc(code)})</span></h4>
+      <label>kind<select data-bind="kind">
+        ${kinds.map((k) => `<option value="${esc(k)}"${k === kind ? ' selected' : ''}>${esc(k)}</option>`).join('')}
+      </select></label>
+      ${fields}
+      <div class="row">
+        <button data-action="binding-clear">unbind this key</button>
+      </div>
+    </div>`;
+  }
+
+  /**
+   * The scale the map is written against.
+   *
+   * From the render when there is one, because that is what will actually sound.
+   * Otherwise from the mapping the author has set, so the editor still shows
+   * real note names on a piece that has never been generated.
+   */
+  _pieceScale() {
+    const live = this.app.keyboard?.scale;
+    if (this.get('render.fingerprint') && live) return live;
+    const name = this.get('preset.mapping.quantize_to') || this.catalog.default_scale || 'pentatonic_minor';
+    const entry = this.catalog.scales?.[name];
+    return {
+      name,
+      offsets: entry?.offsets ?? [0, 3, 5, 7, 10],
+      span: 12,
+      root: Number(this.get('preset.mapping.note_low')) || this.catalog.mapping_defaults?.note_low || 33,
+    };
   }
 
   _section(title, body, note = '') {
@@ -775,6 +928,61 @@ export class Studio {
     body.querySelector('[data-action="add-pedal"]')?.addEventListener('click', () => {
       this.chainSlots.push({ pedal: $('studio-add-pedal').value, params: {} });
       this.dirty = true;
+      this.paint();
+    });
+
+    for (const button of body.querySelectorAll('[data-key]')) {
+      button.addEventListener('click', () => {
+        // Toggling the selection off on a second click means the binding panel
+        // does not stay open over a key you have finished with.
+        this.selectedKey = this.selectedKey === button.dataset.key ? null : button.dataset.key;
+        this.paint();
+      });
+    }
+
+    for (const input of body.querySelectorAll('[data-bind]')) {
+      input.addEventListener('change', () => {
+        const field = input.dataset.bind;
+        const keymap = { ...(this.get('performance.keymap', {}) || {}) };
+        const current = { ...(keymap[this.selectedKey] ?? { kind: 'degree', degree: 0 }) };
+
+        if (field === 'kind') {
+          // Changing the kind invalidates the other fields, so it starts clean
+          // rather than carrying a degree into a sample binding.
+          const fresh = { kind: input.value };
+          if (input.value === 'degree') Object.assign(fresh, { degree: 0, octave: 0 });
+          if (input.value === 'note') fresh.midi = 60;
+          keymap[this.selectedKey] = fresh;
+        } else {
+          current[field] = input.type === 'number' ? Number(input.value) : input.value;
+          keymap[this.selectedKey] = current;
+        }
+        this.set('performance.keymap', keymap);
+        this.paint();
+      });
+    }
+
+    body.querySelector('[data-action="binding-clear"]')?.addEventListener('click', () => {
+      const keymap = { ...(this.get('performance.keymap', {}) || {}) };
+      delete keymap[this.selectedKey];
+      this.set('performance.keymap', keymap);
+      this.selectedKey = null;
+      this.paint();
+    });
+
+    body.querySelector('[data-action="keymap-default"]')?.addEventListener('click', () => {
+      this.set('performance.keymap', defaultKeymap());
+      this.paint();
+    });
+
+    body.querySelector('[data-action="keymap-chromatic"]')?.addEventListener('click', () => {
+      this.set('performance.keymap', chromaticKeymap());
+      this.paint();
+    });
+
+    body.querySelector('[data-action="keymap-clear"]')?.addEventListener('click', () => {
+      this.set('performance.keymap', {});
+      this.selectedKey = null;
       this.paint();
     });
 

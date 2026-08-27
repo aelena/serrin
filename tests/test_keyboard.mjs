@@ -173,8 +173,10 @@ test('claims nothing while switched off', () => {
 });
 
 test('claims nothing in a mode that is not implemented', () => {
+  // `notes` graduated; these two have not. The assertion is about the state of
+  // the world, so it moves as modes land rather than being loosened.
   const { keyboard } = makeKeyboard();
-  for (const mode of ['notes', 'samples', 'beats']) {
+  for (const mode of ['samples', 'beats']) {
     assert.equal(keyboard.setMode(mode), false, `${mode} reports itself ready`);
     assert.ok(!keyboard.claims(keyEvent('a')), `${mode} claimed a key anyway`);
     assert.equal(keyboard.press(keyEvent('a')), null);
@@ -182,10 +184,15 @@ test('claims nothing in a mode that is not implemented', () => {
   assert.equal(keyboard.setMode('random'), true);
 });
 
-test('the mode registry marks exactly one mode ready', () => {
-  const ready = Object.entries(MODES).filter(([, mode]) => mode.ready);
-  assert.equal(ready.length, 1);
-  assert.equal(ready[0][0], 'random');
+test('the mode registry says which modes work', () => {
+  const ready = Object.entries(MODES)
+    .filter(([, mode]) => mode.ready)
+    .map(([name]) => name);
+  assert.deepEqual(ready.sort(), ['notes', 'random']);
+  // The pending ones stay listed and stay disabled: the shape is visible and
+  // nothing pretends.
+  assert.equal(MODES.samples.ready, false);
+  assert.equal(MODES.beats.ready, false);
 });
 
 // ---------------------------------------------------------------------------

@@ -724,3 +724,63 @@ kbd {
   .studio-side { width: 100%; border-right: none; border-bottom: 1px solid var(--panel-line); }
   .studio-main { column-width: auto; }
 }
+
+
+/* --------------------------------------------------------- key map --- */
+/*
+ * A picture of a keyboard rather than a table of bindings, because a map IS a
+ * layout and rows of "KeyA -> degree 0" do not read as one. Offset per row so it
+ * looks like the thing it represents.
+ */
+.keyboard {
+  display: grid;
+  gap: 0.25rem;
+  margin-bottom: 0.8rem;
+  /* Wide enough that ten keys fit without the labels wrapping. */
+  min-width: 22rem;
+}
+
+.keyrow { display: flex; gap: 0.25rem; }
+.keyrow:nth-child(2) { padding-left: 0.6rem; }
+.keyrow:nth-child(3) { padding-left: 1.2rem; }
+.keyrow:nth-child(4) { padding-left: 1.8rem; }
+
+.key {
+  flex: 1;
+  min-width: 2.1rem;
+  background: #101014;
+  border: 1px solid var(--panel-line);
+  color: var(--ink-faint);
+  font-family: var(--mono);
+  cursor: pointer;
+  padding: 0.3rem 0.1rem 0.25rem;
+  display: grid;
+  gap: 0.1rem;
+  text-align: center;
+}
+
+.key b { color: var(--ink-dim); font-size: 0.72rem; font-weight: 400; }
+.key span { font-size: 0.5rem; color: var(--ink-faint); min-height: 0.7rem; }
+
+.key:hover { border-color: var(--ink-dim); }
+.key.bound { border-color: #3d4a1f; background: #14170c; }
+.key.bound b { color: var(--ink); }
+.key.bound span { color: var(--accent); }
+.key.on { border-color: var(--accent); }
+.key.on b { color: var(--accent); }
+
+.binding {
+  border: 1px solid var(--panel-line);
+  padding: 0.6rem 0.7rem;
+  margin-bottom: 0.7rem;
+  background: rgba(16, 16, 20, 0.6);
+}
+
+.binding h4 {
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+  font-weight: 400;
+  color: var(--ink);
+}
+
+.binding h4 .dim { font-size: 0.6rem; }

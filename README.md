@@ -251,6 +251,35 @@ dominant, whole tone, diminished, chromatic. `mod_reduce` maps values onto scale
 so `pentatonic_minor` is the default and full chromaticism is a deliberate
 choice.
 
+### The key map editor
+
+In the studio. A picture of a keyboard, because a map *is* a layout and a table
+of `KeyA → degree 0` rows does not read as one. Click a position, bind it below;
+buttons fill the two home rows, every key, or clear it.
+
+**Positions, not characters.** A binding is stored against `KeyboardEvent.code`
+— `KeyA`, not `a`. `event.key` depends on the layout, so a map authored on a
+Spanish keyboard would land on different physical keys on a US one, and a piece
+is meant to be shareable.
+
+That leaves the opposite problem — the editor has to show *you* your own keys —
+which `navigator.keyboard.getLayoutMap()` answers where it exists, with a US
+table as the fallback. So the labels are yours and the storage is portable.
+
+**Degrees, not pitches.** A binding is a scale degree by default, so the map
+stays in key when the chain or the mapping moves the piece into another scale.
+Absolute MIDI notes are available and say so in the editor: they will not follow.
+
+Four binding kinds: `degree`, `note`, `sample`, `pattern`. The last two are
+stored and validated but not playable yet — and they resolve to something that
+is *not* a note rather than quietly falling back to a pitch, so a half-built map
+does not sound finished. A binding pointing at a sample the piece does not have
+is refused when the manifest is saved.
+
+The browser's default map and the CLI's `default_keymap()` are cross-checked by a
+test, since both exist and a divergence would mean "the same piece" plays two
+different layouts.
+
 ### The studio
 
 <kbd>F3</kbd>, or `?view=studio`. A full-viewport view for configuring a piece
@@ -541,12 +570,19 @@ Modes arrive in stages. Only the first exists:
 | mode | what it does |
 |---|---|
 | `random` | any key draws a note from the piece's own scale — **implemented** |
-| `notes` | key → fixed note, for playing actual melodies — pending |
-| `samples` | key → sample — pending, needs a map editor |
+| `notes` | the piece's own key map, for playing melodies — **implemented** |
+| `samples` | key → sample — pending |
 | `beats` | step sequencing and live recording over the stream — pending |
 
 The pending modes are listed in the dropdown and disabled, so the shape is
 visible and nothing pretends to work.
+
+**`notes` claims only the keys the map binds.** An unbound position falls through
+to the piece's own shortcuts, so a nine-key map does not make thirty other keys
+dead. `random` has no map and claims everything.
+
+<kbd>↑</kbd>/<kbd>↓</kbd> shift the whole map by octaves while playing — the
+arrows are never claimed, which makes them the natural place for it.
 
 **Which notes.** The pipeline now exports the key the piece is in
 (`meta.scale`), so the keyboard plays *inside* it rather than over the top of
@@ -653,7 +689,8 @@ No framework, no bundler. ES modules straight from `web/js/`.
 | `recorder.js` | MediaRecorder takes, audio or audio+video |
 | `source.js` | uploads and repo paths, posted to the render endpoint |
 | `console.js` | the devtools drawer, and the JS reconstruction |
-| `studio.js` | the design-time view: piece config, chain editor, album |
+| `studio.js` | the design-time view: piece config, chain editor, key map |
+| `keymap.js` | the physical layout, and what each position plays |
 | `panel.js` | the author panel |
 | `main.js` | wiring, URL params, keyboard |
 
@@ -710,8 +747,9 @@ document as the stage rather than a second window because live envelope drawing
 has to be on the engine's clock.
 
 **Keyboard:** <kbd>space</kbd> play/pause · <kbd>p</kbd> panel · <kbd>F2</kbd>
-console · <kbd>i</kbd> invert · <kbd>f</kbd> fullscreen · <kbd>1</kbd>–<kbd>8</kbd>
-mute a voice.
+console · <kbd>F3</kbd> studio · <kbd>i</kbd> invert · <kbd>f</kbd> fullscreen ·
+<kbd>1</kbd>–<kbd>8</kbd> mute a voice · <kbd>↑</kbd>/<kbd>↓</kbd> shift octave
+while playing.
 
 **URL params:** `?preset=` · `?audio=&visual=` · `?panel=1` · `?autoplay=1` ·
 `?speed=`.
@@ -724,7 +762,7 @@ mute a voice.
 python tests/run_all.py          # both suites, and they cross-check each other
 ```
 
-288 Python tests, 85 Node tests, plus a cross-language round trip. Weighted toward the two properties the aesthetic
+288 Python tests, 115 Node tests, plus a cross-language round trip. Weighted toward the two properties the aesthetic
 depends on: **determinism** (a promise that is not tested is a wish) and
 **invariants** (a pedal that breaks one fails hundreds of frames later, in the
 browser, which is a miserable way to find out).
@@ -758,8 +796,9 @@ data/  out/       inputs and renders (out/ is gitignored)
 
 Honest accounting of what is specified but not yet real:
 
-- **The keyboard's other three modes** — `notes`, `samples`, `beats`, plus the
-  key map editor and sample upload they need. The studio has a place for them.
+- **`samples` and `beats`** — the two remaining keyboard modes. Both are stored
+  and validated in the piece format already; `samples` also needs an upload
+  endpoint, and `beats` will share the piece's tempo grid so it inherits swing.
 - **Live pedal reorder/toggle** (§4.5). The chain is rendered offline in phase 1,
   so the panel's pedal list is read-only and shows which pedals the current
   intensity has *notionally* switched on. Real live manipulation needs the chain

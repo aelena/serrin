@@ -291,6 +291,15 @@ window.addEventListener('keydown', async (event) => {
     return;
   }
 
+  // The arrows are never claimed (claims() takes single-character keys only),
+  // which makes them the natural place for a live octave shift.
+  if (app.keyboard?.enabled && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+    event.preventDefault();
+    const offset = app.keyboard.shiftOctave(event.key === 'ArrowUp' ? 1 : -1);
+    app.console?.log(`octave shift ${offset > 0 ? '+' : ''}${offset}`, 'info');
+    return;
+  }
+
   if (event.key === 'Escape' && app.keyboard?.enabled) {
     app.keyboard.enabled = false;
     app.keyboard.panic();

@@ -129,8 +129,11 @@ export class Panel {
     const keyboard = this.app.keyboard;
     const state = keyboard.enabled ? (keyboard.ready ? 'live' : 'mode not implemented') : 'off';
     const last = keyboard.lastNote === null ? '—' : noteName(keyboard.lastNote);
+    const octave = keyboard.octaveOffset
+      ? ` · ↑↓ octave ${keyboard.octaveOffset > 0 ? '+' : ''}${keyboard.octaveOffset}`
+      : '';
     $('keyboard-readout').textContent =
-      `${state} · ${keyboard.describe()} · last ${last}`;
+      `${state} · ${keyboard.describe()} · last ${last}${octave}`;
     $('ctl-keyboard-mode').value = keyboard.mode;
     $('ctl-keyboard-register').value = keyboard.register;
   }
