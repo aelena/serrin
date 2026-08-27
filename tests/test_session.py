@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from serrin.chain import Chain, default_chain  # noqa: E402
-from serrin.export import build_piece  # noqa: E402
+from serrin.export import build_render  # noqa: E402
 from serrin.ingest import fingerprint, ingest_csv  # noqa: E402
 from serrin.session import FORMAT, Session, SessionError, promote_to_preset  # noqa: E402
 from serrin.tempo import Tempo  # noqa: E402
@@ -186,8 +186,8 @@ class TestReRenderReproduces(unittest.TestCase):
         stream = ingest_csv(self.path, **ingest_kwargs)
         chain = default_chain()
         transformed = chain.apply(stream, source=self.path)
-        piece = build_piece(transformed, chain=chain)
-        return fingerprint(transformed), piece.meta
+        rendered = build_render(transformed, chain=chain)
+        return fingerprint(transformed), rendered.meta
 
     def test_a_session_reproduces_its_render_exactly(self):
         first, meta = self._render(

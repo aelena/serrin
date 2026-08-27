@@ -32,3 +32,6 @@ package-lock.json
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# --- pieces: the author decides where their albums live ---
+pieces/

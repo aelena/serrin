@@ -274,15 +274,15 @@ class TestTempo(unittest.TestCase):
         self.assertEqual(out.tempo.swing, 0.4)
 
     def test_tempo_reaches_the_export(self):
-        from serrin.export import build_piece
+        from serrin.export import build_render
 
         stream = make_stream(length=64, tempo=Tempo(bpm=96, subdivision=8))
-        piece = build_piece(stream)
-        self.assertEqual(piece.meta["tempo"]["bpm"], 96)
-        self.assertEqual(piece.meta["tempo"]["subdivision"], 8)
-        self.assertAlmostEqual(piece.meta["tempo"]["rate"], 3.2)
-        self.assertIn("bars", piece.meta)
-        self.assertIn("delay_note", piece.meta)
+        rendered = build_render(stream)
+        self.assertEqual(rendered.meta["tempo"]["bpm"], 96)
+        self.assertEqual(rendered.meta["tempo"]["subdivision"], 8)
+        self.assertAlmostEqual(rendered.meta["tempo"]["rate"], 3.2)
+        self.assertIn("bars", rendered.meta)
+        self.assertIn("delay_note", rendered.meta)
 
 
 # ---------------------------------------------------------------------------

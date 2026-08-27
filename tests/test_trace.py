@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from serrin.chain import Chain, default_chain  # noqa: E402
-from serrin.export import MappingConfig, build_piece, trace_mapping  # noqa: E402
+from serrin.export import MappingConfig, build_render, trace_mapping  # noqa: E402
 from serrin.ingest import ingest_csv  # noqa: E402
 from serrin.rng import Rng  # noqa: E402
 from serrin.stream import Stream  # noqa: E402
@@ -292,10 +292,10 @@ class TestMappingStage(unittest.TestCase):
         stream = ingest_csv(self.path, columns=["cpu", "mem", "spiky"], trace=self.recorder)
         chain = default_chain()
         self.transformed = chain.apply(stream, seed=5, recorder=self.recorder)
-        self.piece = build_piece(
+        self.rendered = build_render(
             self.transformed, chain=chain, config=MappingConfig(quantize_to="pentatonic_minor")
         )
-        trace_mapping(self.transformed, self.piece, self.recorder, examples=5)
+        trace_mapping(self.transformed, self.rendered, self.recorder, examples=5)
         self.stage = self.recorder.stages[-1]
 
     def tearDown(self):
@@ -321,8 +321,8 @@ class TestMappingStage(unittest.TestCase):
         frame = row["frame"]
         for index, voice in enumerate(row["voices"]):
             self.assertEqual(voice["byte"], self.transformed.data[index][frame])
-            self.assertEqual(voice["freq"], self.piece.audio["voices"][index]["freq"][frame])
-            self.assertEqual(voice["y"], self.piece.visual["voices"][index]["y"][frame])
+            self.assertEqual(voice["freq"], self.rendered.audio["voices"][index]["freq"][frame])
+            self.assertEqual(voice["y"], self.rendered.visual["voices"][index]["y"][frame])
 
     def test_the_scale_is_carried(self):
         self.assertEqual(self.stage.detail["scale"]["name"], "pentatonic_minor")

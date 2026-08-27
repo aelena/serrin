@@ -319,8 +319,13 @@ def effective_scale(stream: Stream, config: MappingConfig | None = None) -> dict
 # packaging
 # ---------------------------------------------------------------------------
 @dataclass
-class Piece:
-    """Everything the browser needs, and everything needed to regenerate it."""
+class Render:
+    """One produced pair: the two documents, and the metadata tying them together.
+
+    Named for what it is. This used to be called ``Piece``, which became wrong
+    the moment a piece became the *document you author* -- a render is an output
+    of a piece, the way a mixdown is an output of a session.
+    """
 
     meta: dict
     audio: dict
@@ -334,7 +339,7 @@ class Piece:
         return {"meta": self.meta, "envelope": self.envelope, **self.visual}
 
 
-def build_piece(
+def build_render(
     stream: Stream,
     chain=None,
     envelope: Envelope | None = None,
@@ -343,7 +348,7 @@ def build_piece(
     loop_policy: str = "vary",
     voice_entry: str = "variance",
     delay_note: str = "1/8.",
-) -> Piece:
+) -> Render:
     cfg = config or MappingConfig()
     env = envelope or Envelope.constant(1.0)
 
@@ -404,7 +409,7 @@ def build_piece(
         # The key the piece is in, so anything playing along can stay in it.
         "scale": effective_scale(stream, cfg),
     }
-    return Piece(
+    return Render(
         meta=meta,
         audio=to_audio(stream, cfg),
         visual=to_visual(stream, cfg),
@@ -412,7 +417,7 @@ def build_piece(
     )
 
 
-def trace_mapping(stream: Stream, piece: "Piece", recorder, examples: int = 8) -> None:
+def trace_mapping(stream: Stream, rendered: "Render", recorder, examples: int = 8) -> None:
     """Record the fork: the same byte read two different ways.
 
     Worked examples rather than statistics, because the interesting claim here is
@@ -430,8 +435,8 @@ def trace_mapping(stream: Stream, piece: "Piece", recorder, examples: int = 8) -
     for frame in frames:
         row = {"frame": frame, "voices": []}
         for index, name in enumerate(stream.names):
-            audio = piece.audio["voices"][index]
-            visual = piece.visual["voices"][index]
+            audio = rendered.audio["voices"][index]
+            visual = rendered.visual["voices"][index]
             row["voices"].append(
                 {
                     "voice": name,
@@ -443,13 +448,13 @@ def trace_mapping(stream: Stream, piece: "Piece", recorder, examples: int = 8) -
                     "x": visual["x"][frame],
                     "y": visual["y"][frame],
                     "density": visual["density"][frame],
-                    "glyph": piece.visual["glyphs"][visual["glyph"][frame]],
+                    "glyph": rendered.visual["glyphs"][visual["glyph"][frame]],
                     "glitch": visual["glitch"][frame],
                 }
             )
         rows.append(row)
 
-    config = piece.meta.get("mapping", {})
+    config = rendered.meta.get("mapping", {})
     recorder.add(
         "mapping",
         "forked export",
@@ -467,7 +472,7 @@ def trace_mapping(stream: Stream, piece: "Piece", recorder, examples: int = 8) -
                 "delta and local spread (change, turbulence); position from a "
                 "rotated channel, so a voice is not positioned by its own pitch"
             ),
-            "scale": piece.meta.get("scale"),
+            "scale": rendered.meta.get("scale"),
         },
         note=(
             "one byte, two readings. Section 3.5 forbids audio and visual from "

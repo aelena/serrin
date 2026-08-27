@@ -19,7 +19,7 @@ from pathlib import Path
 from . import pedals
 from .chain import Chain, default_chain
 from .envelope import ARCHETYPES, EQUATIONS, Envelope, voice_order
-from .export import MappingConfig, build_piece, trace_mapping, write_json
+from .export import MappingConfig, build_render, trace_mapping, write_json
 from .ingest import IngestError, ingest_csv
 from .ingest_git import (
     METRICS,
@@ -29,6 +29,7 @@ from .ingest_git import (
     describe_repo,
     ingest_repo,
 )
+from .piece import MANIFEST, Piece, PieceError, list_pieces, new_piece, slug
 from .scales import SCALE_BANK, resolve
 from .session import Session, SessionError, promote_to_preset
 from .stream import MAX_VOICES
@@ -125,6 +126,18 @@ def _read_source(args, ingest_opts: dict, source: str, kind: str, recorder=None)
     )
 
 
+def _piece_relative(piece: Piece, path: Path) -> str:
+    """Store paths relative to the piece folder, so it stays portable."""
+    try:
+        return str(Path(path).resolve().relative_to(piece.folder.resolve())).replace(
+            "\\", "/"
+        )
+    except (ValueError, AttributeError):
+        # Rendered somewhere outside the folder: keep the absolute path rather
+        # than an unresolvable relative one.
+        return str(path).replace("\\", "/")
+
+
 def _tempo_from_args(args, ingest_opts: dict) -> Tempo:
     """Precedence: CLI tempo > CLI rate > preset tempo > preset rate > default.
 
@@ -183,8 +196,23 @@ def cmd_render(args) -> int:
     # transformed -- so it stands in for --input and --chain together. Explicit
     # flags still win, which is what makes "re-render that session but faster"
     # a one-flag change rather than an edit.
-    session = Session.load(args.session) if args.session else None
-    if session is not None:
+    # A piece supersedes both --input and --chain: it holds the source and the
+    # chain together, which is the whole point of it being the document.
+    piece = Piece.load(args.piece) if args.piece else None
+    if piece is not None:
+        chain = piece.chain()
+        source = args.repo or args.input or piece.source_path
+        kind = "git" if args.repo else piece.kind
+        overrides = piece.ingest_kwargs()
+        session = None
+    elif args.session:
+        session = Session.load(args.session)
+    else:
+        session = None
+
+    if piece is not None:
+        pass
+    elif session is not None:
         chain = session.chain()
         source = args.repo or args.input or session.path
         kind = "git" if args.repo else session.source.get("kind", "csv")
@@ -196,7 +224,18 @@ def cmd_render(args) -> int:
         overrides = {}
 
     if not source:
-        raise IngestError("nothing to render: pass --input, --repo or --session")
+        raise IngestError(
+            "nothing to render: pass --piece, --input, --repo or --session"
+        )
+
+    # A piece renders into its own folder unless told otherwise, so the outputs
+    # travel with the document rather than piling up in a shared out/.
+    if piece is not None:
+        piece.render_dir.mkdir(parents=True, exist_ok=True)
+        if args.out_audio == "out/stream_audio.json":
+            args.out_audio = str(piece.render_dir / "audio.json")
+        if args.out_visual == "out/stream_visual.json":
+            args.out_visual = str(piece.render_dir / "visual.json")
 
     ingest_opts = {**dict(chain.ingest), **overrides}
     if args.chain and session is not None:
@@ -235,7 +274,7 @@ def cmd_render(args) -> int:
     loop_policy = args.loop or chain.piece.get("loop", "vary")
     voice_entry = args.voice_entry or chain.piece.get("voice_entry", "variance")
 
-    piece = build_piece(
+    rendered = build_render(
         transformed,
         chain=chain,
         envelope=envelope,
@@ -247,16 +286,18 @@ def cmd_render(args) -> int:
     )
 
     if recorder is not None:
-        trace_mapping(transformed, piece, recorder)
+        trace_mapping(transformed, rendered, recorder)
 
     out_audio = Path(args.out_audio)
     out_visual = Path(args.out_visual)
-    audio_bytes = write_json(out_audio, piece.audio_document(), compact=not args.pretty)
-    visual_bytes = write_json(out_visual, piece.visual_document(), compact=not args.pretty)
+    audio_bytes = write_json(out_audio, rendered.audio_document(), compact=not args.pretty)
+    visual_bytes = write_json(
+        out_visual, rendered.visual_document(), compact=not args.pretty
+    )
 
-    print(f"label       {piece.meta['label']}")
+    print(f"label       {rendered.meta['label']}")
     print(f"seed        {seed}")
-    print(f"fingerprint {piece.meta['fingerprint']}")
+    print(f"fingerprint {rendered.meta['fingerprint']}")
     print(f"tempo       {transformed.tempo.describe()}")
     print(
         f"stream      {transformed.n_voices} voices x {transformed.length} frames "
@@ -272,6 +313,24 @@ def cmd_render(args) -> int:
     print(f"mode        {mode} / loop={loop_policy} / entry={voice_entry}")
     print(f"audio  ->   {out_audio}  ({audio_bytes / 1024:.1f} KiB)")
     print(f"visual ->   {out_visual}  ({visual_bytes / 1024:.1f} KiB)")
+
+    if piece is not None and not args.no_save:
+        # The piece records that it has been produced. This is the only field the
+        # pipeline writes back, which keeps "render" from quietly editing the
+        # author's configuration.
+        piece.render = {
+            "label": rendered.meta["label"],
+            "fingerprint": rendered.meta["fingerprint"],
+            "seed": rendered.meta["seed"],
+            "audio": _piece_relative(piece, out_audio),
+            "visual": _piece_relative(piece, out_visual),
+            "frames": rendered.meta["frames"],
+            "duration": rendered.meta["duration"],
+            "voices": rendered.meta["voices"],
+            "rendered_at": args.stamp,
+        }
+        manifest = piece.save()
+        print(f"piece ->    {manifest}")
 
     if args.out_session:
         # The runtime block is carried over from an input session if there was
@@ -311,8 +370,8 @@ def cmd_render(args) -> int:
             preset=chain.to_json(),
             runtime=dict(session.runtime) if session else {},
             streams={"audio": str(out_audio), "visual": str(out_visual)},
-            label=piece.meta["label"],
-            fingerprint=piece.meta["fingerprint"],
+            label=rendered.meta["label"],
+            fingerprint=rendered.meta["fingerprint"],
             saved_at=session.saved_at if session else None,
         )
         saved.save(args.out_session)
@@ -420,6 +479,105 @@ def cmd_curve(args) -> int:
     return 0
 
 
+def cmd_new(args) -> int:
+    """Create a piece: a folder with a manifest and the directories it owns."""
+    folder = Path(args.folder)
+    source: dict = {}
+    if args.input:
+        source = {"kind": "csv", "path": _relative_to(args.input, folder)}
+    elif args.repo:
+        source = {"kind": "git", "path": _relative_to(args.repo, folder), "metric": "hash"}
+    if args.tempo:
+        source["tempo"] = Tempo.parse(args.tempo).to_json()
+
+    preset = _load_chain(args.chain).to_json() if args.chain else default_chain().to_json()
+    piece = new_piece(folder, name=args.name, source=source, preset=preset, stamp=args.stamp)
+    if args.title:
+        piece.title = args.title
+        piece.save()
+
+    print(piece.describe())
+    print(f"\n  -> {folder / MANIFEST}")
+    if not source:
+        print("  no source yet: edit source.path, or re-run with --input/--repo")
+    return 0
+
+
+def _relative_to(target: str, folder: Path) -> str:
+    """Express a source path relative to the piece folder when it makes sense.
+
+    A CSV sitting inside the piece is referenced relatively so the folder can be
+    moved; one living elsewhere on the machine keeps its absolute path, because a
+    relative path out of the folder would break the moment it moved anyway.
+    """
+    candidate = Path(target).resolve()
+    try:
+        return str(candidate.relative_to(folder.resolve())).replace("\\", "/")
+    except ValueError:
+        return str(candidate).replace("\\", "/")
+
+
+def cmd_pieces(args) -> int:
+    """List the pieces in a folder. The album view."""
+    entries = list_pieces(args.folder)
+    if not entries:
+        print(f"no pieces in {args.folder}")
+        print(f"  make one:  python -m serrin new {args.folder}/01-first -i data.csv")
+        return 0
+
+    print(f"{len(entries)} piece(s) in {args.folder}\n")
+    for entry in entries:
+        if not entry.get("ok"):
+            print(f"  {entry['name']:<20} BROKEN: {entry['error']}")
+            continue
+        state = entry["fingerprint"][:12] if entry["rendered"] else "not rendered"
+        title = f" — {entry['title']}" if entry["title"] else ""
+        print(f"  {entry['name']:<20} {state:<14} {entry['kind']:<4} {entry['chain']}{title}")
+        if entry["performance"] != "nothing mapped yet":
+            print(f"  {'':<20} {entry['performance']}")
+        if entry["missing_samples"]:
+            print(f"  {'':<20} MISSING: {', '.join(entry['missing_samples'])}")
+    return 0
+
+
+def cmd_piece(args) -> int:
+    """Inspect one piece, or import a session as one."""
+    if args.from_session:
+        session = Session.load(args.from_session)
+        # A session is a piece that has already been rendered, so importing is
+        # reshaping rather than converting -- one reader handles both formats.
+        piece = Piece.from_json(session.to_json(), folder=Path(args.folder))
+        # The folder name wins: the author chose it, and a session label is a
+        # generated "source+chain+seed" string that makes a poor piece name.
+        piece.name = slug(args.name or Path(args.folder).name or session.label)
+        piece.save(Path(args.folder))
+        (Path(args.folder) / "samples").mkdir(exist_ok=True)
+        print(f"imported {args.from_session} as a piece\n")
+        print(piece.describe())
+        return 0
+
+    piece = Piece.load(args.folder)
+    print(piece.describe())
+
+    if args.keymap and piece.performance.keymap:
+        print("\n  keymap (by physical key position, so it survives layout changes)")
+        for code, binding in sorted(piece.performance.keymap.items()):
+            detail = " ".join(f"{k}={v}" for k, v in binding.items() if k != "kind")
+            print(f"    {code:<10} {binding['kind']:<8} {detail}")
+
+    for sample in piece.performance.samples:
+        exists = "ok " if piece.resolve(sample.path).exists() else "MISSING"
+        print(f"    sample {sample.id:<12} {exists} {sample.path}")
+
+    for pattern in piece.performance.patterns:
+        grid = ["."] * pattern.steps
+        for hit in pattern.hits:
+            grid[hit["step"]] = "x"
+        flag = " " if pattern.enabled else "x"
+        print(f"    [{flag}] {pattern.id:<12} {''.join(grid)}")
+    return 0
+
+
 def cmd_session(args) -> int:
     """Look at a session, or freeze its render layer into a preset."""
     session = Session.load(args.file)
@@ -470,6 +628,20 @@ def build_parser() -> argparse.ArgumentParser:
     # -- render -------------------------------------------------------------
     render = sub.add_parser("render", help="run the pipeline and export both streams")
     render.add_argument("--input", "-i", help="source CSV (or take it from --session)")
+    render.add_argument(
+        "--piece",
+        "-p",
+        help="render a piece: its source, its chain, into its own out/",
+    )
+    render.add_argument(
+        "--no-save",
+        action="store_true",
+        help="do not write the render back into the piece manifest",
+    )
+    render.add_argument(
+        "--stamp",
+        help="timestamp recorded on the piece (default: none, for reproducible files)",
+    )
     render.add_argument(
         "--repo",
         "-r",
@@ -588,6 +760,28 @@ def build_parser() -> argparse.ArgumentParser:
     curve.add_argument("--out", help="write the baked curve to JSON")
     curve.set_defaults(func=cmd_curve)
 
+    fresh = sub.add_parser("new", help="create a piece folder")
+    fresh.add_argument("folder", help="where to create it")
+    fresh.add_argument("--name")
+    fresh.add_argument("--title")
+    fresh.add_argument("--input", "-i", help="source CSV")
+    fresh.add_argument("--repo", "-r", help="source git repository")
+    fresh.add_argument("--chain", "-c", help="preset to start from")
+    fresh.add_argument("--tempo")
+    fresh.add_argument("--stamp")
+    fresh.set_defaults(func=cmd_new)
+
+    pieces = sub.add_parser("pieces", help="list the pieces in a folder (an album)")
+    pieces.add_argument("folder", nargs="?", default="pieces")
+    pieces.set_defaults(func=cmd_pieces)
+
+    one = sub.add_parser("piece", help="inspect a piece, or import a session as one")
+    one.add_argument("folder")
+    one.add_argument("--keymap", action="store_true", help="print the key bindings")
+    one.add_argument("--from-session", help="import this session file as a piece")
+    one.add_argument("--name")
+    one.set_defaults(func=cmd_piece)
+
     session = sub.add_parser("session", help="inspect a session, or freeze it as a preset")
     session.add_argument("file", help="session JSON, as saved from the panel")
     session.add_argument("--to-preset", help="write the render layer out as a preset")
@@ -611,6 +805,7 @@ def main(argv: list[str] | None = None) -> int:
     except (
         GitError,
         IngestError,
+        PieceError,
         SessionError,
         TempoError,
         ValueError,

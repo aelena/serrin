@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from serrin.chain import Chain  # noqa: E402
-from serrin.export import build_piece  # noqa: E402
+from serrin.export import build_render  # noqa: E402
 from serrin.ingest import fingerprint  # noqa: E402
 from serrin.ingest_git import (  # noqa: E402
     METRICS,
@@ -285,13 +285,13 @@ class TestDeterminismAndIntegration(GitFixtureCase):
         stream = ingest_repo(self.repo, metric="hash", tempo=Tempo(84, 8))
         chain = Chain.load(Path(__file__).resolve().parent.parent / "presets" / "merkle_drift.json")
         transformed = chain.apply(stream, seed=auto_seed_repo(self.repo))
-        piece = build_piece(transformed, chain=chain)
+        rendered = build_render(transformed, chain=chain)
 
-        self.assertEqual(len(piece.audio["voices"]), stream.n_voices)
-        self.assertEqual(len(piece.visual["voices"]), stream.n_voices)
-        self.assertEqual(piece.meta["source_kind"], "git")
-        self.assertEqual(piece.meta["git"]["metric"], "hash")
-        self.assertTrue(all(v["freq"] for v in piece.audio["voices"]))
+        self.assertEqual(len(rendered.audio["voices"]), stream.n_voices)
+        self.assertEqual(len(rendered.visual["voices"]), stream.n_voices)
+        self.assertEqual(rendered.meta["source_kind"], "git")
+        self.assertEqual(rendered.meta["git"]["metric"], "hash")
+        self.assertTrue(all(v["freq"] for v in rendered.audio["voices"]))
 
     def test_a_git_session_round_trips(self):
         stream = ingest_repo(self.repo, metric="interval", traversal="chrono")

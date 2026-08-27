@@ -32,12 +32,22 @@ import sys
 import traceback
 import webbrowser
 from pathlib import Path
+from urllib.parse import parse_qs, unquote
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 #: Uploads land here, under out/, which is gitignored.
 UPLOAD_DIR = ROOT / "out" / "uploads"
+
+#: Where pieces live. Point this at your album folder with --pieces.
+#:
+#: Every write goes through `_piece_folder`, which refuses anything outside this
+#: root. Reads are confined the same way. The server binds to localhost and this
+#: is an author's tool, but an endpoint that writes JSON to a path supplied over
+#: HTTP wants a boundary regardless -- and "the folder you pointed me at" is a
+#: boundary the author already understands.
+PIECES_DIR = ROOT / "pieces"
 
 #: A CSV bigger than this is refused rather than buffered. Generous for
 #: telemetry, small enough that a stray POST cannot exhaust memory.
@@ -62,6 +72,29 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
         self.send_header("Cache-Control", "no-store, max-age=0")
         super().end_headers()
+
+    def translate_path(self, path: str) -> str:
+        """Serve /pieces/... from the pieces root, wherever that is.
+
+        Needed because an album can live anywhere on disk -- that is the point of
+        pieces being portable folders -- but the browser can only fetch what the
+        server exposes. Without this, a rendered piece kept outside the repo had
+        no URL and could not be played.
+
+        Sanitized by hand rather than by the base class, which resolves against
+        its own single directory: components are filtered, so `..` and absolute
+        segments cannot climb out of the pieces root.
+        """
+        route = path.partition("?")[0].partition("#")[0]
+        if not route.startswith("/pieces/"):
+            return super().translate_path(path)
+        target = PIECES_DIR.resolve()
+        for part in route[len("/pieces/") :].split("/"):
+            part = unquote(part)
+            if not part or part in (".", ".."):
+                continue
+            target = target / part
+        return str(target)
 
     def log_message(self, fmt, *args):
         print(f"  {fmt % args}")
@@ -91,15 +124,41 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             raise ValueError(f"body is not valid JSON: {exc}") from exc
 
     # -- routing ------------------------------------------------------------
+    def do_GET(self):  # noqa: N802
+        route, _, query = self.path.partition("?")
+        route = route.rstrip("/")
+        if not route.startswith("/api/"):
+            # Static, including /pieces/... which translate_path redirects.
+            super().do_GET()
+            return
+        params = parse_qs(query)
+        handlers = {
+            "/api/pieces": lambda: {"pieces": list_pieces_api(params.get("folder", [None])[0])},
+            "/api/piece": lambda: open_piece_api(params.get("folder", [None])[0]),
+        }
+        self._dispatch(handlers.get(route))
+
     def do_POST(self):  # noqa: N802 -- the base class spells it this way
-        if self.path.rstrip("/") != "/api/render":
+        route = self.path.partition("?")[0].rstrip("/")
+        handlers = {
+            "/api/render": lambda: render_upload(self._read_json()),
+            "/api/piece": lambda: save_piece_api(self._read_json()),
+            "/api/piece/new": lambda: new_piece_api(self._read_json()),
+        }
+        self._dispatch(handlers.get(route))
+
+    def _dispatch(self, handler) -> None:
+        if handler is None:
             self._send_json(404, {"error": f"no such endpoint: {self.path}"})
             return
         try:
-            payload = self._read_json()
-            self._send_json(200, render_upload(payload))
+            self._send_json(200, handler())
         except ValueError as exc:
+            # PieceError and TempoError are ValueErrors, so a bad manifest or a
+            # bad tempo reads as a client mistake rather than a server fault.
             self._send_json(400, {"error": str(exc)})
+        except FileNotFoundError as exc:
+            self._send_json(404, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
             # The browser gets one line; the terminal gets the traceback, because
             # this is the author's own machine and hiding it helps nobody.
@@ -108,7 +167,121 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 
 # ---------------------------------------------------------------------------
-# the one endpoint
+# pieces
+# ---------------------------------------------------------------------------
+def _piece_folder(raw: str | None, must_exist: bool = True) -> Path:
+    """Resolve a piece folder, refusing anything outside the pieces root.
+
+    The check is on the *resolved* path, so `../` and symlinks cannot walk out.
+    Without that, an endpoint that writes JSON would happily write it anywhere
+    the process can reach.
+    """
+    if not raw:
+        raise ValueError("no folder given")
+    root = PIECES_DIR.resolve()
+    candidate = (root / raw).resolve() if not Path(raw).is_absolute() else Path(raw).resolve()
+    if candidate != root and root not in candidate.parents:
+        raise ValueError(
+            f"{candidate} is outside the pieces root ({root}). "
+            "Start the server with --pieces pointing at your album folder."
+        )
+    if must_exist and not candidate.exists():
+        raise FileNotFoundError(f"no such piece folder: {candidate}")
+    return candidate
+
+
+def _piece_payload(piece) -> dict:
+    """A piece as the browser wants it: the manifest plus what it can infer."""
+    root = PIECES_DIR.resolve()
+    try:
+        relative = str(piece.folder.resolve().relative_to(root)).replace("\\", "/")
+    except ValueError:
+        relative = str(piece.folder)
+    render = dict(piece.render)
+    # Rewritten as URLs the page can fetch, so loading a rendered piece uses the
+    # same path as loading a preset. Served through /pieces/, not /out/, because
+    # an album can live anywhere -- see translate_path.
+    for key in ("audio", "visual"):
+        if render.get(key):
+            try:
+                on_disk = piece.resolve(render[key]).resolve()
+                inside = str(on_disk.relative_to(root)).replace("\\", "/")
+                render[f"{key}_url"] = f"/pieces/{inside}"
+            except ValueError:
+                render[f"{key}_url"] = None
+    return {
+        "folder": relative,
+        "absolute": str(piece.folder),
+        "manifest": piece.to_json(),
+        "render": render,
+        "missing_samples": [s.path for s in piece.missing_samples()],
+        "source_exists": bool(piece.source.get("path")) and piece.source_path.exists(),
+    }
+
+
+def list_pieces_api(folder: str | None) -> list[dict]:
+    from serrin.piece import list_pieces  # noqa: PLC0415
+
+    base = _piece_folder(folder) if folder else PIECES_DIR
+    if not base.exists():
+        return []
+    return list_pieces(base)
+
+
+def open_piece_api(folder: str | None) -> dict:
+    from serrin.piece import Piece  # noqa: PLC0415
+
+    return _piece_payload(Piece.load(_piece_folder(folder)))
+
+
+def new_piece_api(payload: dict) -> dict:
+    from serrin.chain import Chain, default_chain  # noqa: PLC0415
+    from serrin.piece import new_piece, slug  # noqa: PLC0415
+
+    name = slug(payload.get("name") or "untitled")
+    folder = _piece_folder(payload.get("folder") or name, must_exist=False)
+    preset = (
+        Chain.from_json(payload["preset"]).to_json()
+        if payload.get("preset")
+        else default_chain().to_json()
+    )
+    piece = new_piece(
+        folder,
+        name=name,
+        source=dict(payload.get("source") or {}),
+        preset=preset,
+        stamp=payload.get("stamp"),
+    )
+    if payload.get("title"):
+        piece.title = payload["title"]
+        piece.save()
+    print(f"  created piece {folder}")
+    return _piece_payload(piece)
+
+
+def save_piece_api(payload: dict) -> dict:
+    """Write a manifest back.
+
+    Validated by loading it before it touches the disk: an invalid manifest that
+    got saved would make the piece unopenable, which is a worse failure than a
+    rejected save.
+    """
+    from serrin.piece import Piece  # noqa: PLC0415
+
+    folder = _piece_folder(payload.get("folder"))
+    manifest = payload.get("manifest")
+    if not isinstance(manifest, dict):
+        raise ValueError("no manifest in the request")
+
+    piece = Piece.from_json(manifest, folder=folder)
+    piece.saved_at = payload.get("stamp") or piece.saved_at
+    piece.save(folder)
+    print(f"  saved piece {folder}")
+    return _piece_payload(piece)
+
+
+# ---------------------------------------------------------------------------
+# rendering
 # ---------------------------------------------------------------------------
 def render_upload(payload: dict) -> dict:
     """Render a CSV posted from the browser, or a local repository path.
@@ -129,7 +302,7 @@ def render_upload(payload: dict) -> dict:
     # static server from working.
     from serrin.chain import Chain, default_chain
     from serrin.envelope import Envelope
-    from serrin.export import MappingConfig, build_piece, trace_mapping, write_json
+    from serrin.export import MappingConfig, build_render, trace_mapping, write_json
     from serrin.ingest import ingest_csv
     from serrin.ingest_git import ingest_repo
     from serrin.session import Session
@@ -144,14 +317,21 @@ def render_upload(payload: dict) -> dict:
         else None
     )
 
+    from serrin.piece import Piece  # noqa: PLC0415
+
+    piece = Piece.load(_piece_folder(payload["piece"])) if payload.get("piece") else None
+
     csv_text = payload.get("csv")
     repo_path = payload.get("repo")
-    if not csv_text and not repo_path:
-        raise ValueError("send either a csv body or a repo path")
+    if piece is None and not csv_text and not repo_path:
+        raise ValueError("send a piece folder, a csv body or a repo path")
 
     # -- the chain ---------------------------------------------------------
     preset_name = payload.get("preset")
-    if payload.get("preset_json"):
+    if piece is not None and not preset_name and not payload.get("preset_json"):
+        # The piece holds its own chain. That is the point of it.
+        chain = piece.chain()
+    elif payload.get("preset_json"):
         chain = Chain.from_json(payload["preset_json"])
     elif preset_name:
         candidate = ROOT / "presets" / f"{_slug(preset_name)}.json"
@@ -167,7 +347,29 @@ def render_upload(payload: dict) -> dict:
     )
 
     # -- the source --------------------------------------------------------
-    if csv_text:
+    if piece is not None and not csv_text and not repo_path:
+        source = piece.source_path
+        kind = piece.kind
+        name = piece.name
+        overrides = piece.ingest_kwargs()
+        if tempo is not None:
+            overrides["tempo"] = tempo
+        if kind == "git":
+            stream = ingest_repo(source, **overrides)
+            if recorder is not None:
+                recorder.add(
+                    "ingest",
+                    f"read {source.name} (git)",
+                    stream,
+                    params={
+                        "metric": stream.meta["git"]["metric"],
+                        "traversal": stream.meta["git"]["traversal"],
+                    },
+                    detail=dict(stream.meta["git"]),
+                )
+        else:
+            stream = ingest_csv(source, trace=recorder, **overrides)
+    elif csv_text:
         name = _slug(Path(str(payload.get("name") or "upload.csv")).stem)
         UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         source = UPLOAD_DIR / f"{name}.csv"
@@ -227,7 +429,7 @@ def render_upload(payload: dict) -> dict:
     envelope = Envelope.from_spec(chain.envelope) if chain.envelope else Envelope.constant(1.0)
     piece_opts = dict(chain.piece)
 
-    piece = build_piece(
+    rendered = build_render(
         transformed,
         chain=chain,
         envelope=envelope,
@@ -245,13 +447,57 @@ def render_upload(payload: dict) -> dict:
         raise ValueError(f"upload directory {UPLOAD_DIR} is outside the served root {ROOT}")
 
     if recorder is not None:
-        trace_mapping(transformed, piece, recorder)
+        trace_mapping(transformed, rendered, recorder)
+
+    if piece is not None and not csv_text and not repo_path:
+        piece.render_dir.mkdir(parents=True, exist_ok=True)
+        audio_path = piece.render_dir / "audio.json"
+        visual_path = piece.render_dir / "visual.json"
+        write_json(audio_path, rendered.audio_document())
+        write_json(visual_path, rendered.visual_document())
+
+        piece.render = {
+            "label": rendered.meta["label"],
+            "fingerprint": rendered.meta["fingerprint"],
+            "seed": rendered.meta["seed"],
+            "audio": "out/audio.json",
+            "visual": "out/visual.json",
+            "frames": rendered.meta["frames"],
+            "duration": rendered.meta["duration"],
+            "voices": rendered.meta["voices"],
+            "rendered_at": payload.get("stamp"),
+        }
+        piece.save()
+        print(
+            f"  rendered piece {piece.name}: {transformed.n_voices} voices x "
+            f"{transformed.length} frames"
+        )
+        result = _piece_payload(piece)
+        result.update(
+            {
+                "ok": True,
+                "kind": piece.kind,
+                "chain": chain.name,
+                "label": rendered.meta["label"],
+                "fingerprint": rendered.meta["fingerprint"],
+                "seed": rendered.meta["seed"],
+                "voices": rendered.meta["voices"],
+                "frames": rendered.meta["frames"],
+                "duration": rendered.meta["duration"],
+                "bars": rendered.meta["bars"],
+                "git": stream.meta.get("git"),
+                "audio": result["render"].get("audio_url"),
+                "visual": result["render"].get("visual_url"),
+                "trace": recorder.to_json() if recorder is not None else None,
+            }
+        )
+        return result
 
     target = UPLOAD_DIR / name
     audio_path = target.with_name(f"{name}_audio.json")
     visual_path = target.with_name(f"{name}_visual.json")
-    write_json(audio_path, piece.audio_document())
-    write_json(visual_path, piece.visual_document())
+    write_json(audio_path, rendered.audio_document())
+    write_json(visual_path, rendered.visual_document())
 
     session = Session(
         source={
@@ -279,8 +525,8 @@ def render_upload(payload: dict) -> dict:
             "audio": str(audio_path.relative_to(ROOT)).replace("\\", "/"),
             "visual": str(visual_path.relative_to(ROOT)).replace("\\", "/"),
         },
-        label=piece.meta["label"],
-        fingerprint=piece.meta["fingerprint"],
+        label=rendered.meta["label"],
+        fingerprint=rendered.meta["fingerprint"],
     )
     session_path = target.with_name(f"{name}.session.json")
     session.save(session_path)
@@ -292,13 +538,13 @@ def render_upload(payload: dict) -> dict:
 
     return {
         "ok": True,
-        "label": piece.meta["label"],
-        "fingerprint": piece.meta["fingerprint"],
-        "seed": piece.meta["seed"],
-        "voices": piece.meta["voices"],
-        "frames": piece.meta["frames"],
-        "duration": piece.meta["duration"],
-        "bars": piece.meta["bars"],
+        "label": rendered.meta["label"],
+        "fingerprint": rendered.meta["fingerprint"],
+        "seed": rendered.meta["seed"],
+        "voices": rendered.meta["voices"],
+        "frames": rendered.meta["frames"],
+        "duration": rendered.meta["duration"],
+        "bars": rendered.meta["bars"],
         "kind": kind,
         "chain": chain.name,
         "git": stream.meta.get("git"),
@@ -320,10 +566,21 @@ def main() -> int:
         default="127.0.0.1",
         help="bind address (default localhost; this server accepts uploads)",
     )
+    parser.add_argument(
+        "--pieces",
+        default=None,
+        help="the folder your pieces live in (default: ./pieces). Writes are "
+        "confined to it.",
+    )
     parser.add_argument("--preset", default=None, help="open with ?preset=NAME")
     parser.add_argument("--panel", action="store_true", help="open with the panel showing")
     parser.add_argument("--no-open", action="store_true")
     args = parser.parse_args()
+
+    global PIECES_DIR  # noqa: PLW0603 -- one setting, decided at startup
+    if args.pieces:
+        PIECES_DIR = Path(args.pieces).expanduser().resolve()
+    PIECES_DIR.mkdir(parents=True, exist_ok=True)
 
     if not (ROOT / "out").exists():
         print("note: out/ does not exist yet -- render a stream first:")
@@ -346,6 +603,7 @@ def main() -> int:
     http.server.ThreadingHTTPServer.daemon_threads = True
     with http.server.ThreadingHTTPServer((args.host, args.port), handler) as httpd:
         print(f"serrin -- serving {ROOT}")
+        print(f"  pieces in {PIECES_DIR}")
         print(f"  {url}")
         if args.host not in ("127.0.0.1", "localhost"):
             print(f"  reachable on {args.host}: this server accepts uploads and runs renders")

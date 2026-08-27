@@ -241,6 +241,113 @@ class TestRenderRepo(unittest.TestCase):
         self.assertEqual(again, result["fingerprint"])
 
 
+class TestPieceEndpoints(unittest.TestCase):
+    """The endpoints the studio view is built on."""
+
+    def setUp(self):
+        self.album = ROOT / "out" / ".test-pieces"
+        self.album.mkdir(parents=True, exist_ok=True)
+        self._original = serve.PIECES_DIR
+        serve.PIECES_DIR = self.album
+        (self.album / "data.csv").write_text(CSV, encoding="utf-8")
+
+    def tearDown(self):
+        serve.PIECES_DIR = self._original
+        shutil.rmtree(self.album, ignore_errors=True)
+
+    def _new(self, name="01-one", **extra):
+        return serve.new_piece_api(
+            {
+                "name": name,
+                "source": {"kind": "csv", "path": "../data.csv"},
+                "stamp": "2026-08-27T09:00:00Z",
+                **extra,
+            }
+        )
+
+    def test_listing_an_empty_album(self):
+        self.assertEqual(serve.list_pieces_api(None), [])
+
+    def test_creating_and_listing(self):
+        self._new("01-one", title="One")
+        self._new("02-two")
+        names = [entry["name"] for entry in serve.list_pieces_api(None)]
+        self.assertEqual(names, ["01-one", "02-two"])
+
+    def test_opening_returns_the_manifest_and_what_it_infers(self):
+        self._new()
+        payload = serve.open_piece_api("01-one")
+        self.assertEqual(payload["manifest"]["name"], "01-one")
+        self.assertEqual(payload["folder"], "01-one")
+        self.assertTrue(payload["source_exists"])
+        self.assertEqual(payload["missing_samples"], [])
+
+    def test_saving_a_manifest_round_trips(self):
+        created = self._new()
+        manifest = created["manifest"]
+        manifest["title"] = "Renamed"
+        manifest["performance"] = {
+            "keymap": {"KeyA": {"kind": "degree", "degree": 0, "octave": 0}}
+        }
+        saved = serve.save_piece_api({"folder": "01-one", "manifest": manifest})
+        self.assertEqual(saved["manifest"]["title"], "Renamed")
+        self.assertEqual(len(saved["manifest"]["performance"]["keymap"]), 1)
+        # And it is really on disk, not just echoed back.
+        reopened = serve.open_piece_api("01-one")
+        self.assertEqual(reopened["manifest"]["title"], "Renamed")
+
+    def test_an_invalid_manifest_is_refused_before_it_reaches_the_disk(self):
+        # A saved-but-invalid manifest would make the piece unopenable, which is
+        # a worse failure than a rejected save.
+        self._new()
+        before = serve.open_piece_api("01-one")["manifest"]
+        bad = {**before, "performance": {"keymap": {"KeyA": {"kind": "telepathy"}}}}
+        with self.assertRaises(ValueError):
+            serve.save_piece_api({"folder": "01-one", "manifest": bad})
+        self.assertEqual(serve.open_piece_api("01-one")["manifest"], before)
+
+    def test_rendering_a_piece_writes_into_it_and_records_itself(self):
+        self._new()
+        result = serve.render_upload({"piece": "01-one", "stamp": "2026-08-27T09:10:00Z"})
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["fingerprint"])
+        self.assertTrue((self.album / "01-one" / "out" / "audio.json").exists())
+
+        reopened = serve.open_piece_api("01-one")
+        self.assertEqual(reopened["manifest"]["render"]["fingerprint"], result["fingerprint"])
+        # Stored relative, so the folder stays portable.
+        self.assertEqual(reopened["manifest"]["render"]["audio"], "out/audio.json")
+        # Served through /pieces/, because an album can live outside the repo.
+        self.assertTrue(reopened["render"]["audio_url"].startswith("/pieces/"))
+
+    def test_rendering_a_piece_twice_gives_the_same_fingerprint(self):
+        self._new()
+        first = serve.render_upload({"piece": "01-one"})
+        second = serve.render_upload({"piece": "01-one"})
+        self.assertEqual(first["fingerprint"], second["fingerprint"])
+
+    def test_a_piece_render_can_be_traced(self):
+        self._new()
+        result = serve.render_upload({"piece": "01-one", "trace": True, "trace_window": 4})
+        kinds = [stage["kind"] for stage in result["trace"]["stages"]]
+        self.assertEqual(kinds[0], "ingest")
+        self.assertEqual(kinds[-1], "mapping")
+
+    def test_folders_outside_the_pieces_root_are_refused(self):
+        # The resolved path is checked, so `..` and absolute paths both fail.
+        for attempt in ("../../../etc", "..", str(ROOT), "01-one/../../outside"):
+            with self.subTest(attempt=attempt), self.assertRaises((ValueError, FileNotFoundError)):
+                serve.open_piece_api(attempt)
+
+    def test_writes_outside_the_pieces_root_are_refused(self):
+        with self.assertRaises((ValueError, FileNotFoundError)):
+            serve.save_piece_api({"folder": "../escape", "manifest": {}})
+
+    def test_a_missing_piece_is_a_404_not_a_500(self):
+        with self.assertRaises(FileNotFoundError):
+            serve.open_piece_api("no-such-piece")
+
+
 class TestSeedDispatch(unittest.TestCase):
     """The bug the endpoint exposed, pinned at its real location."""
 

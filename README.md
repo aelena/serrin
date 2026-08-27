@@ -70,7 +70,10 @@ Two things to know about long runs:
 One entry point, five subcommands:
 
 ```bash
-python -m serrin render   -i data.csv -c presets/gritty_01.json   # the main event
+python -m serrin new      my-album/01-decay -i data.csv           # start a piece
+python -m serrin render   --piece my-album/01-decay              # render it
+python -m serrin pieces   my-album                               # the album
+python -m serrin render   -i data.csv -c presets/gritty_01.json   # or one-off
 python -m serrin render   --repo . -c presets/merkle_drift.json    # a commit graph instead
 python -m serrin render   --session out/my.session.json           # re-render what you saved
 python -m serrin session  out/my.session.json --to-preset p.json  # freeze it as a preset
@@ -357,6 +360,97 @@ loads the result exactly like a preset, with no second code path in the runtime.
 on request; that is fine on your own machine and not fine on a shared network.
 `--host 0.0.0.0` exists and says what it is doing when you use it.
 
+## Pieces
+
+The thing you work on is a **piece**, and a piece is a folder.
+
+Until now the central object was a *render*: the pipeline produced two JSON files
+and the browser played them, and a session was a note taken afterwards about what
+you had found. That is the wrong way round for making an album, so the flow is
+inverted — the piece holds everything needed to generate itself, and the render
+becomes an output of it, like a mixdown.
+
+```
+my-album/
+  01-decay/
+    piece.json      the manifest
+    data.csv        or a path to somewhere else
+    samples/        audio the performance layer triggers
+    out/            renders, disposable
+  02-static/
+  kit/              samples shared across the series
+```
+
+```bash
+python -m serrin new my-album/01-decay -i data.csv --title Decay --tempo 96/16+0.2
+python -m serrin render --piece my-album/01-decay   # into its own out/
+python -m serrin piece  my-album/01-decay --keymap   # inspect one
+python -m serrin pieces my-album                     # the album view
+python -m serrin piece  my-album/03-old --from-session out/old.session.json
+```
+
+**A folder rather than a file**, for two practical reasons. Samples cannot live
+in the JSON — base64 audio bloats the file and destroys the diff, which is
+exactly what breaks the version control you are meant to be doing yourself. And
+relative paths make the folder portable: copy it, zip it, move it into an album,
+and it still resolves. A piece can point at `../kit/kick.wav` to share a sample
+with the rest of a series without duplicating it.
+
+### The four blocks
+
+| block | holds | render input? |
+|---|---|---|
+| `source` | what to ingest and how | yes |
+| `preset` | the pedal chain and mapping — the schema the CLI already speaks | yes |
+| `performance` | keymap, samples, patterns, keyboard settings | **no** |
+| `runtime` | levels, mutes, visual toggles | no |
+
+The first two decide what the pipeline produces; the last two decide what happens
+on top of it. That boundary is what stops "open a piece" from implying "and
+re-render it".
+
+`performance` is where §4.3 is honoured rather than broken. **Samples live there
+and only there** — the eight data voices stay oscillators, because the generated
+sound is meant to be primitive. What *you* play over the top is interpretation
+rather than translation, and that is a different rule.
+
+`render` is a fifth, optional block: present once the piece has been produced at
+least once. Its absence is normal — a piece exists before it has been rendered,
+which is the entire point of the inversion.
+
+### Keys are bound by position, not by character
+
+A keymap stores `KeyA`, not `a`. `event.key` depends on the layout, so a map
+authored on a Spanish keyboard would land on different physical keys on a US one
+— and a piece is meant to be shareable. Position is also the right model
+musically: a mapping is a *layout*, like a piano.
+
+Bindings are scale **degrees** by default rather than fixed MIDI notes, so a map
+stays in key when the chain or the mapping changes the piece's scale. Absolute
+pitches would go quietly out of tune.
+
+### A session is a piece that has been rendered
+
+The old session format loads without translation — one reader, two shapes — so
+anything you saved before still opens, and `piece --from-session` imports it into
+a folder.
+
+### Serving an album
+
+```bash
+python scripts/serve.py --pieces ~/music/my-album
+```
+
+The endpoints the studio view is built on: `GET /api/pieces`, `GET /api/piece`,
+`POST /api/piece`, `POST /api/piece/new`, and `POST /api/render` with
+`{"piece": "01-decay"}`. Rendered files are served from `/pieces/…`, so an album
+can live anywhere on disk rather than only inside the repo.
+
+**Writes are confined to the pieces root.** The resolved path is checked, so `..`
+and absolute paths both fail — an endpoint that writes JSON to a path supplied
+over HTTP wants a boundary, and "the folder you pointed me at" is one you already
+understand.
+
 ### Sessions: keeping what you found
 
 The panel used to be a place to discover settings you could not keep. **save
@@ -584,7 +678,7 @@ mute a voice.
 python tests/run_all.py          # both suites, and they cross-check each other
 ```
 
-223 Python tests, 85 Node tests, plus a cross-language round trip. Weighted toward the two properties the aesthetic
+273 Python tests, 85 Node tests, plus a cross-language round trip. Weighted toward the two properties the aesthetic
 depends on: **determinism** (a promise that is not tested is a wish) and
 **invariants** (a pedal that breaks one fails hundreds of frames later, in the
 browser, which is a miserable way to find out).
@@ -601,7 +695,7 @@ the pipeline rendered.
 
 ```
 serrin/           the pipeline: rng, scales, tempo, ingest, ingest_git,
-                  pedals, chain, envelope, export, trace, session, cli
+                  pedals, chain, envelope, export, trace, session, piece, cli
 presets/          chain definitions
 scripts/          sample data generator, dev server
 web/              the runtime (index.html, style.css, js/)
@@ -618,6 +712,11 @@ data/  out/       inputs and renders (out/ is gitignored)
 
 Honest accounting of what is specified but not yet real:
 
+- **The studio view** — a fullscreen editor for the render layer, where the
+  keymap, samples, patterns and archetype get edited before generating. The
+  format and the endpoints are in; the UI is next.
+- **The keyboard's other three modes** — `notes`, `samples`, `beats`. They need
+  the studio view, which is why the piece format came first.
 - **Live pedal reorder/toggle** (§4.5). The chain is rendered offline in phase 1,
   so the panel's pedal list is read-only and shows which pedals the current
   intensity has *notionally* switched on. Real live manipulation needs the chain

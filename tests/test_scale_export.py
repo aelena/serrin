@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from serrin import pedals  # noqa: E402
 from serrin.chain import Chain, Slot  # noqa: E402
-from serrin.export import MappingConfig, build_piece, effective_scale  # noqa: E402
+from serrin.export import MappingConfig, build_render, effective_scale  # noqa: E402
 from serrin.rng import Rng  # noqa: E402
 from serrin.scales import DEFAULT_SCALE, resolve  # noqa: E402
 from serrin.stream import Stream  # noqa: E402
@@ -83,13 +83,13 @@ class TestEffectiveScale(unittest.TestCase):
         self.assertEqual(scale["offsets"], resolve("harmonic_minor")[0])
 
     def test_the_scale_reaches_the_export(self):
-        piece = build_piece(make_stream(), config=MappingConfig(quantize_to="pentatonic_minor"))
-        self.assertIn("scale", piece.meta)
-        self.assertEqual(piece.meta["scale"]["name"], "pentatonic_minor")
+        rendered = build_render(make_stream(), config=MappingConfig(quantize_to="pentatonic_minor"))
+        self.assertIn("scale", rendered.meta)
+        self.assertEqual(rendered.meta["scale"]["name"], "pentatonic_minor")
         # Both documents carry it, so either can drive an instrument.
         self.assertEqual(
-            piece.audio_document()["meta"]["scale"],
-            piece.visual_document()["meta"]["scale"],
+            rendered.audio_document()["meta"]["scale"],
+            rendered.visual_document()["meta"]["scale"],
         )
 
     def test_every_exported_pitch_is_in_the_declared_scale(self):
@@ -99,10 +99,10 @@ class TestEffectiveScale(unittest.TestCase):
 
         stream = Chain(slots=[Slot("delta", {"order": 1})]).apply(make_stream(), seed=5)
         config = MappingConfig(quantize_to="pentatonic_minor", note_low=36, note_high=72)
-        piece = build_piece(stream, config=config)
-        offsets = set(piece.meta["scale"]["offsets"])
-        root = piece.meta["scale"]["root"]
-        for voice in piece.audio["voices"]:
+        rendered = build_render(stream, config=config)
+        offsets = set(rendered.meta["scale"]["offsets"])
+        root = rendered.meta["scale"]["root"]
+        for voice in rendered.audio["voices"]:
             for freq in voice["freq"]:
                 midi = round(69 + 12 * math.log2(freq / 440.0))
                 self.assertIn((midi - root) % 12, offsets, f"{freq} Hz is off-scale")

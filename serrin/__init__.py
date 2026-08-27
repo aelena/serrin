@@ -2,7 +2,7 @@
 
 from .chain import Chain, Slot, default_chain
 from .envelope import Envelope
-from .export import MappingConfig, build_piece
+from .export import MappingConfig, build_render
 from .ingest import auto_seed, ingest_csv
 from .stream import MAX_VOICES, Stream
 
@@ -16,7 +16,7 @@ __all__ = [
     "Slot",
     "Stream",
     "auto_seed",
-    "build_piece",
+    "build_render",
     "default_chain",
     "ingest_csv",
     "__version__",

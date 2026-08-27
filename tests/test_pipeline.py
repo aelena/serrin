@@ -28,7 +28,7 @@ from serrin import envelope as env_mod  # noqa: E402
 from serrin import pedals  # noqa: E402
 from serrin.chain import Chain, ChainError, Slot, default_chain  # noqa: E402
 from serrin.envelope import Envelope, active_voice_count, voice_gates  # noqa: E402
-from serrin.export import MappingConfig, build_piece, to_audio, to_visual  # noqa: E402
+from serrin.export import MappingConfig, build_render, to_audio, to_visual  # noqa: E402
 from serrin.ingest import IngestError, auto_seed, ingest_csv, monotonicity, quantize  # noqa: E402
 from serrin.rng import Lfsr, Rng, derive, seed_from_bytes  # noqa: E402
 from serrin.scales import ScaleError, midi_to_hz, parse_intervals, resolve  # noqa: E402
@@ -529,27 +529,27 @@ class TestExport(unittest.TestCase):
                 self.assertIn((midi - config.note_low) % 12, offsets, f"{freq} Hz is off-scale")
 
     def test_piece_metadata_identifies_the_render(self):
-        piece = build_piece(self.stream, chain=default_chain(), envelope=Envelope.from_equation("arc"))
-        meta = piece.meta
+        rendered = build_render(self.stream, chain=default_chain(), envelope=Envelope.from_equation("arc"))
+        meta = rendered.meta
         self.assertEqual(meta["seed"], 4242)
         self.assertIn("gritty_01", meta["label"])
         self.assertEqual(meta["frames"], self.stream.length)
         self.assertEqual(len(meta["voices"]), self.stream.n_voices)
         self.assertEqual(len(meta["voice_entry_order"]), self.stream.n_voices)
         self.assertTrue(meta["fingerprint"])
-        self.assertEqual(len(piece.envelope["curve"]), piece.envelope["resolution"])
+        self.assertEqual(len(rendered.envelope["curve"]), rendered.envelope["resolution"])
 
     def test_both_documents_carry_the_same_meta(self):
-        piece = build_piece(self.stream, chain=default_chain())
-        self.assertEqual(piece.audio_document()["meta"], piece.visual_document()["meta"])
+        rendered = build_render(self.stream, chain=default_chain())
+        self.assertEqual(rendered.audio_document()["meta"], rendered.visual_document()["meta"])
 
     def test_fingerprint_tracks_content(self):
         other = default_chain().apply(
             ingest_csv(self.path, columns=["cpu", "mem", "spiky"]), seed=1
         )
-        piece_a = build_piece(self.stream)
-        piece_b = build_piece(other)
-        self.assertNotEqual(piece_a.meta["fingerprint"], piece_b.meta["fingerprint"])
+        rendered_a = build_render(self.stream)
+        rendered_b = build_render(other)
+        self.assertNotEqual(rendered_a.meta["fingerprint"], rendered_b.meta["fingerprint"])
 
 
 def _pearson(a, b) -> float:
