@@ -355,9 +355,12 @@
         <span id="studio-title" class="studio-piece">no piece open</span>
         <span id="studio-state" class="studio-state"></span>
         <span class="spacer"></span>
-        <button id="studio-save" disabled>save</button>
-        <button id="studio-render" disabled>render</button>
-        <button id="studio-play" disabled>play it</button>
+        <button id="studio-save" disabled
+          title="write piece.json — render does this for you if you skip it">save</button>
+        <button id="studio-render" disabled
+          title="save if needed, then run the pipeline and write the audio">render</button>
+        <button id="studio-play" disabled
+          title="take the last render to the stage and play it">play it</button>
         <button id="studio-close" title="to the stage (F3)">to the stage</button>
       </header>
       <p id="studio-message" class="studio-message"></p>

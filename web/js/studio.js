@@ -262,25 +262,37 @@ export class Studio {
       return;
     }
     this.message(`copying ${file.name} into the piece…`);
+    let result;
     try {
       const text = await file.text();
-      const result = await this._post('/api/piece/data', {
+      result = await this._post('/api/piece/data', {
         piece: this.folder,
         filename: file.name,
         text,
       });
+    } catch (error) {
+      // Rejected before it was written: a piece never ends up pointing at a file
+      // that cannot be read. Only failures from *here* are the file's fault.
+      this.message(`not accepted — ${error.message}`, true);
+      return;
+    }
+
+    // Past this point the file is on disk and was read. A failure now is Serrin
+    // failing to draw it, and saying "not accepted" would be a lie that sends the
+    // next hour into the CSV instead of into the page -- which is exactly what
+    // happened when `_columnPicker` went missing.
+    const copied =
+      `${file.name} copied into the piece as ${result.path} ` +
+      `(${(result.bytes / 1024).toFixed(1)} KiB)`;
+    try {
       this.set('source.kind', result.kind);
       this.set('source.path', result.path);
       this.source = result.source ?? null;
       this.paint();
-      this.message(
-        `${file.name} copied into the piece as ${result.path} ` +
-          `(${(result.bytes / 1024).toFixed(1)} KiB)`,
-      );
+      this.message(copied);
     } catch (error) {
-      // Rejected before it was written: a piece never ends up pointing at a file
-      // that cannot be read.
-      this.message(`not accepted — ${error.message}`, true);
+      console.error('studio: painting after upload failed', error);
+      this.message(`${copied} — but the panel failed to redraw: ${error.message}`, true);
     }
   }
 
@@ -543,7 +555,16 @@ export class Studio {
     $('studio-state').classList.toggle('dirty', this.dirty);
     $('studio-save').disabled = !this.manifest || !this.dirty;
     $('studio-render').disabled = !this.manifest || this.busy;
-    $('studio-render').textContent = this.busy ? 'rendering…' : 'render';
+    // The two buttons were reported as indistinguishable, and fairly: render
+    // already saves a dirty piece first, so save is a strict subset of it. Rather
+    // than explain that in a tooltip nobody opens, the button says which of the
+    // two things it is about to do. Save being greyed out when there is nothing
+    // to save then tells the rest of the story on its own.
+    $('studio-render').textContent = this.busy
+      ? 'rendering…'
+      : this.dirty && this.manifest
+        ? 'save + render'
+        : 'render';
     $('studio-play').disabled = !this.get('render.fingerprint');
   }
 
@@ -647,8 +668,17 @@ export class Studio {
       ? `<ul class="problems">${problems}</ul>`
       : '<p class="dim">no problems.</p>';
 
-    if (kind === 'csv') return complaints + this._tableReport() + this._columnPicker();
-    if (kind === 'graph') return complaints + this._graphReport();
+    // Wrapped because a bug in one of these is a bug in the page, and the panel
+    // going blank -- or worse, the error surfacing as "your file was not
+    // accepted" -- hides that completely. A broken section says it is broken.
+    if (kind === 'csv') {
+      return (
+        complaints +
+        this._safe('table report', () => this._tableReport()) +
+        this._safe('column picker', () => this._columnPicker())
+      );
+    }
+    if (kind === 'graph') return complaints + this._safe('history report', () => this._graphReport());
 
     const branches = (source.branches ?? [])
       .map((branch) => esc(branch.name))
@@ -660,6 +690,116 @@ export class Studio {
            ${this.catalog.max_voices}.</p>`
         : '')
     );
+  }
+
+  /**
+   * Drag the pedal cards to reorder them.
+   *
+   * The arrows stay. They are not redundant: they work from the keyboard, they
+   * are unambiguous about one step, and a drag that ends outside the list has to
+   * do nothing -- so having both means the fiddly gesture is never the only way.
+   *
+   * Note what reordering means here. Each pedal draws its randomness from its
+   * position in the chain, so moving one changes every pedal after it. That is
+   * deterministic, not random, but it does mean a drag is a real edit of the
+   * sound and not a cosmetic tidy -- hence marking the piece dirty.
+   */
+  _wireChainDrag(body) {
+    const list = body.querySelector('.slots');
+    if (!list) return;
+    let from = null;
+
+    const clear = () => {
+      for (const card of list.querySelectorAll('.slot')) {
+        card.classList.remove('dragging', 'drop-before', 'drop-after');
+      }
+    };
+
+    for (const card of list.querySelectorAll('.slot[data-index]')) {
+      card.addEventListener('dragstart', (event) => {
+        // A drag starting inside a control would fight with it -- selecting text
+        // in a number field, opening a select -- so those keep their own
+        // behaviour and only the card body starts a drag.
+        if (event.target.closest('input, select, button, textarea')) {
+          event.preventDefault();
+          return;
+        }
+        from = Number(card.dataset.index);
+        card.classList.add('dragging');
+        event.dataTransfer.effectAllowed = 'move';
+        // Firefox ignores a drag with no payload.
+        event.dataTransfer.setData('text/plain', String(from));
+      });
+
+      card.addEventListener('dragover', (event) => {
+        if (from === null) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+        const box = card.getBoundingClientRect();
+        const after = event.clientY > box.top + box.height / 2;
+        card.classList.toggle('drop-before', !after);
+        card.classList.toggle('drop-after', after);
+      });
+
+      card.addEventListener('dragleave', () => {
+        card.classList.remove('drop-before', 'drop-after');
+      });
+
+      card.addEventListener('drop', (event) => {
+        if (from === null) return;
+        event.preventDefault();
+        const over = Number(card.dataset.index);
+        const box = card.getBoundingClientRect();
+        const after = event.clientY > box.top + box.height / 2;
+        this.moveSlot(from, after ? over + 1 : over);
+        from = null;
+      });
+
+      card.addEventListener('dragend', () => {
+        from = null;
+        clear();
+      });
+    }
+  }
+
+  /**
+   * Move a pedal to sit at ``before``, an index in the list *as it stands now*.
+   *
+   * Removing first and inserting second is what makes the arithmetic subtle: once
+   * the pedal is out, every index above it has shifted down by one. Getting this
+   * wrong is an off-by-one that only shows up when dragging downwards, which is
+   * why it is one function with tests rather than inline in a drop handler.
+   */
+  moveSlot(from, before) {
+    // `chainSlots` reaches into the manifest, so it needs one to exist. Reachable
+    // through a drag that outlives the piece being closed.
+    if (!this.manifest) return false;
+    const slots = this.chainSlots;
+    if (from < 0 || from >= slots.length) return false;
+    if (before === from || before === from + 1) return false;  // no movement
+    const [moved] = slots.splice(from, 1);
+    slots.splice(before > from ? before - 1 : before, 0, moved);
+    this.dirty = true;
+    this.paint();
+    return true;
+  }
+
+  /**
+   * Render one part of the report, or say which part failed.
+   *
+   * Serrin's own bugs must not read as complaints about the author's data. That
+   * is not a cosmetic distinction: it sends the next hour to the wrong file.
+   */
+  _safe(what, render) {
+    try {
+      return render() ?? '';
+    } catch (error) {
+      console.error(`studio: ${what} failed`, error);
+      this.app.console?.log(`the ${what} failed to render: ${error.message}`, 'error');
+      return `<p class="warn">the ${esc(what)} failed to render —
+        ${esc(error.message)}. This is a bug in Serrin, not a problem with your
+        file; the source itself was read.</p>`;
+    }
   }
 
   /** How the file was parsed. Shown always, not only when something was odd. */
@@ -675,6 +815,47 @@ export class Studio {
     if (table.preamble_lines) bits.push(`${table.preamble_lines} preamble lines skipped`);
     if (table.dropped_rows) bits.push(`${table.dropped_rows} lines dropped`);
     return `<p class="dim">${bits.join(' · ')}</p>`;
+  }
+
+  /**
+   * The columns, and why each one would be dropped.
+   *
+   * This method went missing: the call site survived a refactor that deleted the
+   * body, so `_sourceReport` threw for every CSV -- and because the throw
+   * happened inside `putData`'s try block, it was reported as "not accepted",
+   * blaming a file that had in fact been read perfectly.
+   */
+  _columnPicker() {
+    const source = this.source;
+    const listed = source?.columns ?? [];
+    if (!listed.length) return '';
+
+    const chosen = this.get('source.columns', null);
+    const max = this.catalog?.max_voices ?? 8;
+
+    const rows = listed
+      .map((column) => {
+        // With no explicit selection the pipeline picks automatically, so the
+        // boxes show what *would* happen rather than an empty list.
+        const on = chosen ? chosen.includes(column.name) : column.chosen;
+        const disabled = column.reason ? ' disabled' : '';
+        const range =
+          column.low === null || column.low === undefined
+            ? ''
+            : `${Number(column.low).toPrecision(4)} … ${Number(column.high).toPrecision(4)}`;
+        return `<tr class="${column.reason ? 'dropped' : ''}">
+          <td><input type="checkbox" data-column="${esc(column.name)}"${on ? ' checked' : ''}${disabled} /></td>
+          <td class="name">${esc(column.name)}</td>
+          <td class="dim">${esc(range)}</td>
+          <td class="dim">${esc(column.reason ?? '')}</td></tr>`;
+      })
+      .join('');
+
+    const kept = listed.filter((column) => !column.reason).length;
+    return `<p class="dim">${kept} of ${listed.length} columns usable · at most
+      ${max} voices · ${chosen ? 'chosen by hand' : 'chosen automatically'}</p>
+      <table class="stable"><tbody>${rows}</tbody></table>
+      <div class="row"><button data-action="columns-auto">choose automatically</button></div>`;
   }
 
   _graphReport() {
@@ -728,8 +909,10 @@ export class Studio {
         const params = Object.entries(pedal?.params ?? slot.params ?? {})
           .map(([key, fallback]) => this._pedalParam(index, key, fallback, slot.params ?? {}))
           .join('');
-        return `<li class="slot${slot.enabled === false ? ' off' : ''}">
+        return `<li class="slot${slot.enabled === false ? ' off' : ''}"
+          draggable="true" data-index="${index}">
           <div class="slot-head">
+            <span class="grip" title="drag to reorder">⠿</span>
             <select data-slot="${index}" data-slot-field="pedal">
               ${names.map((name) => `<option value="${esc(name)}"${name === slot.pedal ? ' selected' : ''}>${esc(name)}</option>`).join('')}
             </select>
@@ -1115,6 +1298,8 @@ export class Studio {
         this.paint();
       });
     }
+
+    this._wireChainDrag(body);
 
     for (const button of body.querySelectorAll('[data-remove]')) {
       button.addEventListener('click', () => {

@@ -547,6 +547,19 @@ def put_data_api(payload: dict) -> dict:
 
     # Validated before it is written, so a piece never ends up pointing at a file
     # that cannot be read. A rejected upload is better than a broken source.
+    if kind == "csv":
+        # This used to be true only of histories: a CSV was written first and
+        # complained about afterwards, so an unparseable one still became the
+        # piece's source. Note what is *not* checked here -- a metadata preamble,
+        # a semicolon, a footer, a decimal comma are all read fine and are none of
+        # the uploader's business. The bar is "can the table be found at all".
+        from serrin.ingest import IngestError, rows_from_text  # noqa: PLC0415
+
+        try:
+            rows_from_text(text, label=raw_name)
+        except IngestError as exc:
+            raise ValueError(str(exc)) from exc
+
     if kind == "graph":
         from serrin.graph import validate_graph  # noqa: PLC0415
 

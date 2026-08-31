@@ -143,8 +143,24 @@ def read_rows(
     """
     path = Path(path)
     text = path.read_text(encoding="utf-8-sig", errors="replace")
+    return rows_from_text(text, delimiter, report, label=str(path))
+
+
+def rows_from_text(
+    text: str,
+    delimiter: str | None = None,
+    report: dict | None = None,
+    label: str = "the file",
+) -> tuple[list[str], list[list[str]]]:
+    """The body of :func:`read_rows`, working on contents rather than a path.
+
+    Split out so an upload can be checked *before* it is written into a piece
+    folder. A piece that points at a file nobody can parse is a worse failure
+    than a refused upload: the refusal names the problem while the author still
+    has the file in front of them.
+    """
     if not text.strip():
-        raise IngestError(f"{path} is empty")
+        raise IngestError(f"{label} is empty")
 
     lines = text.splitlines()
     chosen, header_index, data_start = find_table(lines, delimiter)
@@ -197,7 +213,7 @@ def read_rows(
 
     if not rows:
         raise IngestError(
-            f"{path}: found a header at line {header_index + 1} "
+            f"{label}: found a header at line {header_index + 1} "
             f"({width} columns, delimiter {chosen!r}) but no data rows under it"
         )
     return header, rows

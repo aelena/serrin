@@ -17,6 +17,7 @@ from serrin.ingest import (  # noqa: E402
     _parse_number,
     find_table,
     read_rows,
+    rows_from_text,
 )
 
 
@@ -155,6 +156,123 @@ class ParseNumberTests(unittest.TestCase):
         self.assertIsNone(_parse_number("   "))
         self.assertIsNone(_parse_number("n/a"))
         self.assertIsNone(_parse_number("--"))
+
+
+class RowsFromTextTests(unittest.TestCase):
+    """Parsing contents rather than a path, so an upload can be checked first.
+
+    A piece that points at a file nobody can parse is a worse failure than a
+    refused upload: the refusal names the problem while the author still has the
+    file in front of them and can go fix it.
+    """
+
+    def test_it_agrees_with_reading_the_same_file(self):
+        # The whole reason it is a split-out body and not a second parser.
+        text = "# meta\nMonth;GHI\n1;100\n2;110\n"
+        path = _write(text)
+        from_path = read_rows(path)
+        from_text = rows_from_text(text)
+        self.assertEqual(from_path, from_text)
+
+    def test_the_report_is_the_same_too(self):
+        text = "# a\n# b\nx,y\n1,2\n3,4\nfooter\n"
+        by_path, by_text = {}, {}
+        read_rows(_write(text), report=by_path)
+        rows_from_text(text, report=by_text)
+        by_path.pop("delimiter"), by_text.pop("delimiter")
+        self.assertEqual(by_path, by_text)
+
+    def test_empty_contents_are_refused_with_the_name_given(self):
+        with self.assertRaises(IngestError) as caught:
+            rows_from_text("   \n\n", label="meteo.csv")
+        self.assertIn("meteo.csv", str(caught.exception))
+
+    def test_a_header_with_no_data_is_refused_with_the_name_given(self):
+        with self.assertRaises(IngestError) as caught:
+            rows_from_text("# notes\na,b,c\n", label="meteo.csv")
+        self.assertIn("meteo.csv", str(caught.exception))
+
+    def test_prose_with_no_table_is_refused(self):
+        with self.assertRaises(IngestError):
+            rows_from_text("this file is a note to myself, not data\n", label="notes.csv")
+
+    def test_what_is_not_refused(self):
+        # The bar is "can the table be found at all". A preamble, a semicolon, a
+        # footer and a decimal comma are read fine and are none of the uploader's
+        # business -- rejecting them would be rejecting files that work.
+        text = (
+            "# Solargis prospect\n# site: Medina\n#\n"
+            "Month;GHIm;T24\n"
+            + "".join(f"{m};{100 + m};{10 + m},5\n" for m in range(1, 13))
+            + "Report generated 2024-03-12\n"
+        )
+        header, rows = rows_from_text(text, label="solargis.csv")
+        self.assertEqual(header, ["Month", "GHIm", "T24"])
+        self.assertEqual(len(rows), 12)
+        self.assertEqual(_parse_number(rows[0][2]), 11.5)
+
+
+class UploadValidationTests(unittest.TestCase):
+    """The endpoint refuses before it writes.
+
+    It used to say so in its docstring while only doing it for histories: a CSV
+    was written first and complained about afterwards, so an unparseable one
+    still became the piece's source.
+    """
+
+    def setUp(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        import serve  # noqa: PLC0415
+
+        self.serve = serve
+        self.root = Path(tempfile.mkdtemp())
+        self._original = serve.PIECES_DIR
+        serve.PIECES_DIR = self.root
+        from serrin.piece import new_piece  # noqa: PLC0415
+
+        new_piece(self.root / "p", name="p")
+
+    def tearDown(self):
+        self.serve.PIECES_DIR = self._original
+        import shutil  # noqa: PLC0415
+
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _put(self, text: str, filename: str = "d.csv"):
+        return self.serve.put_data_api(
+            {"piece": "p", "filename": filename, "text": text}
+        )
+
+    def test_an_unparseable_csv_is_refused_and_not_written(self):
+        with self.assertRaises(ValueError) as caught:
+            self._put("# just a note\na,b,c\n")
+        self.assertIn("no data rows", str(caught.exception))
+        # And nothing landed: the piece is not left pointing at a bad file.
+        self.assertEqual(list((self.root / "p").glob("*.csv")), [])
+
+    def test_a_real_export_is_accepted_and_reported(self):
+        text = (
+            "Latitude:\t41.34\nLongitude:\t-4.899\n\n"
+            "time,G(i),T2m\n"
+            + "".join(f"2005010{i}:0010,{i * 11},{i + 3}\n" for i in range(1, 9))
+            + "PVGIS (c) European Union\n"
+        )
+        result = self._put(text, "Timeseries_41.340.csv")
+        self.assertTrue(result["ok"])
+        table = result["source"]["table"]
+        self.assertEqual(table["header_line"], 4)
+        self.assertEqual(table["preamble_lines"], 3)
+        self.assertEqual(table["dropped_rows"], 1)
+        self.assertTrue((self.root / "p" / result["path"]).exists())
+
+    def test_an_empty_upload_is_refused(self):
+        with self.assertRaises(ValueError):
+            self._put("   \n")
+
+    def test_a_suffix_serrin_does_not_read_is_refused(self):
+        with self.assertRaises(ValueError) as caught:
+            self._put("a,b\n1,2\n", "sheet.xlsx")
+        self.assertIn(".xlsx", str(caught.exception))
 
 
 if __name__ == "__main__":

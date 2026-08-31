@@ -269,6 +269,37 @@ strip every comma as a thousands separator, which turns the European `12,5` into
 plausible afterwards. The two conventions are now told apart by shape: commas
 every three digits group, a single comma between digits is a decimal point.
 
+### Whose fault is it
+
+Two failures reported as problems with a CSV turned out to be Serrin's own, and
+the misattribution cost more than the bugs did.
+
+`_columnPicker` went missing: a refactor deleted the body and left the call site,
+so `_sourceReport` threw for every CSV. Because the throw happened inside the
+upload's `try`, it surfaced as **`not accepted — this._columnPicker is not a
+function`** — on a file that had been read perfectly, 140,256 rows of it. That
+sentence sends the next hour into the data.
+
+Three things changed, and only one of them is the missing method:
+
+- **The upload's error handling stops at the upload.** A failure from the request
+  is the file's fault and says `not accepted`. A failure *after* the file is on
+  disk and parsed is Serrin failing to draw it, and says so — the copy still
+  happened, and the message says that too.
+- **Each report section renders inside a guard.** One section throwing used to
+  take the panel; now it prints which section broke and that it is a bug in
+  Serrin, not a problem with your file, and the rest of the report survives.
+- **A test asserts every method `_sourceReport` calls exists.** The specific bug
+  is covered, but the general shape — a call site outliving its method — is what
+  actually happened, twice. Reintroducing the deletion fails six tests.
+
+The upload validation also grew the half its docstring already claimed. It said
+files were checked before being written; that was only true of histories, so an
+unparseable CSV was written first and complained about afterwards. Note what is
+*not* checked: a preamble, a semicolon, a footer, a decimal comma are all read
+fine and none of the uploader's business. The bar is "can the table be found at
+all" — anything stricter would reject files that work.
+
 ### Tempo
 
 The frame grid has a musical name. This does **not** change the tick model —
@@ -417,7 +448,9 @@ What it edits:
     piece is the better default. A path field stays for a file too large to want
     two copies of. The column picker shows *why* each column would be dropped:
     constant, monotonic, or unparseable — and a line above it says how the file
-    was read: delimiter, header line, columns, rows, and anything skipped.
+    was read: delimiter, header line, columns, rows, and anything skipped. An
+    upload is parsed *before* it is written, so a piece never ends up pointing at
+    a file nobody can read.
   - `git` — a clone on this machine, read on every render.
   - `graph` — an exported history, which travels with the piece.
 
@@ -427,8 +460,11 @@ What it edits:
   version answered about the saved path, which is why typing a new one never
   refreshed anything.
 - **tempo** — bpm, subdivision, swing, metre, with the resulting frame rate shown.
-- **pedal chain** — add, remove, reorder, edit every parameter, set the intensity
-  each pedal switches on at.
+- **pedal chain** — add, remove, reorder by dragging the cards (the arrows stay:
+  they work from the keyboard and are unambiguous about one step), edit every
+  parameter, set the intensity each pedal switches on at. Reordering is a real
+  edit of the sound, not a tidy — each pedal draws its randomness from its
+  position, so moving one changes every pedal after it, deterministically.
 - **mapping** — the note range, frequency curve, gate threshold, glitch
   threshold, channel rotation. The subjective layer §5 leaves open on purpose.
 - **envelope** — archetype, equation or a hand-drawn curve.
@@ -921,7 +957,7 @@ key did two unrelated things depending on hidden state.
 python tests/run_all.py          # both suites, and they cross-check each other
 ```
 
-357 Python tests, 175 Node tests, plus a cross-language round trip. Weighted toward the two properties the aesthetic
+367 Python tests, 195 Node tests, plus a cross-language round trip. Weighted toward the two properties the aesthetic
 depends on: **determinism** (a promise that is not tested is a wish) and
 **invariants** (a pedal that breaks one fails hundreds of frames later, in the
 browser, which is a miserable way to find out).
@@ -968,6 +1004,13 @@ renaming it to `piece` is the same silent judgement in a smaller coat. Names tha
 merely need cleaning are still cleaned and the result is shown — `Datos meteo
 UC50` becomes `Datos-meteo-UC50`, and `../escape` becomes `escape`, which is
 also why a name cannot walk out of the pieces root.
+
+**save vs render.** They were reported as indistinguishable, and fairly: render
+already saves a dirty piece before running, so save is a strict subset of it.
+Rather than explain that in a tooltip nobody opens, the render button says which
+of the two things it is about to do — `save + render` when there are unsaved
+edits, `render` when there are not. Save greying out when there is nothing to
+save then tells the rest of the story by itself.
 
 `test_ui_boot.mjs` constructs the panel, studio and console against a minimal
 DOM stub and runs their first paint. It exists because a crash on load once

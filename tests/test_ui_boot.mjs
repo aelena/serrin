@@ -424,5 +424,230 @@ test('no source, no report', () => {
   assert.equal(studio._tableReport(), '');
 });
 
+// ---------------------------------------------------------------------------
+console.log('the column picker');
+//
+// It went missing: a refactor deleted the body and left the call, so
+// _sourceReport threw for every CSV. Nothing caught it because nothing had ever
+// asked a Studio to render a CSV source report.
+
+const CSV_SOURCE = {
+  kind: 'csv',
+  rows: 140256,
+  problems: ['skipped 8 line(s) of preamble; the header looks like line 9: time, G(i)'],
+  table: {
+    delimiter: ',', header_line: 9, preamble_lines: 8,
+    columns: 6, data_rows: 140256, dropped_rows: 6, named_header: true,
+  },
+  columns: [
+    { name: 'time', reason: 'monotonic', chosen: false, low: 0, high: 140255 },
+    { name: 'G(i)', reason: '', chosen: true, low: 0, high: 1012.4 },
+    { name: 'H_sun', reason: '', chosen: true, low: 0, high: 64.2 },
+    { name: 'flat', reason: 'constant', chosen: false, low: 7, high: 7 },
+    { name: 'Int', reason: 'not numeric', chosen: false, low: null, high: null },
+  ],
+};
+
+test('every method _sourceReport calls actually exists', () => {
+  // The generic version of the bug, so the next deleted body fails here.
+  const studio = makeStudio();
+  for (const name of ['_sourceReport', '_tableReport', '_columnPicker', '_graphReport', '_safe']) {
+    assert.equal(typeof studio[name], 'function', `${name} is not a function`);
+  }
+});
+
+test('a csv source report renders without throwing', () => {
+  const studio = makeStudio();
+  studio.source = CSV_SOURCE;
+  const html = studio._sourceReport('csv');
+  assert.ok(html.includes('preamble'), 'the problem list is missing');
+  assert.ok(html.includes('header on line <b>9</b>'), 'the table report is missing');
+  assert.ok(html.includes('data-column="G(i)"'), 'the column picker is missing');
+  // And crucially: no "failed to render" from the _safe wrapper.
+  assert.ok(!html.includes('failed to render'), html);
+});
+
+test('the picker says why each column would be dropped', () => {
+  const studio = makeStudio();
+  studio.source = CSV_SOURCE;
+  const html = studio._columnPicker();
+  assert.ok(html.includes('monotonic'), 'no reason for time');
+  assert.ok(html.includes('constant'), 'no reason for flat');
+  assert.ok(html.includes('not numeric'), 'no reason for Int');
+  assert.ok(html.includes('2 of 5 columns usable'), html);
+});
+
+test('unusable columns cannot be ticked', () => {
+  const studio = makeStudio();
+  studio.source = CSV_SOURCE;
+  const html = studio._columnPicker();
+  // Serrin does not clean data, so an unusable column is not an option -- it is
+  // a thing to fix upstream, and offering the box would imply otherwise.
+  const timeRow = html.slice(html.indexOf('data-column="time"'));
+  assert.ok(timeRow.slice(0, 120).includes('disabled'), timeRow.slice(0, 120));
+});
+
+test('a column with no range does not crash on toPrecision', () => {
+  // `Int` comes back with low: null, which is what a non-numeric column gets.
+  const studio = makeStudio();
+  studio.source = { columns: [{ name: 'Int', reason: 'not numeric', chosen: false, low: null, high: null }] };
+  assert.doesNotThrow(() => studio._columnPicker());
+});
+
+test('no columns, no picker', () => {
+  const studio = makeStudio();
+  studio.source = { kind: 'csv', columns: [] };
+  assert.equal(studio._columnPicker(), '');
+});
+
+// ---------------------------------------------------------------------------
+console.log('a bug in the page is not a complaint about the data');
+
+test('a section that throws says so, and says whose fault it is', () => {
+  const studio = makeStudio();
+  studio.source = CSV_SOURCE;
+  studio._columnPicker = () => {
+    throw new Error('deliberate');
+  };
+  const html = studio._sourceReport('csv');
+  assert.ok(html.includes('failed to render'), html);
+  assert.ok(html.includes('bug in Serrin'), 'it did not disown the failure');
+  // The rest of the report survives: one broken section is not a blank panel.
+  assert.ok(html.includes('header on line <b>9</b>'), 'the table report was lost too');
+});
+
+// ---------------------------------------------------------------------------
+console.log('reordering the pedal chain');
+//
+// Remove-then-insert is where the off-by-one lives: once the pedal is out, every
+// index above it has shifted down by one. It only shows up dragging downwards.
+
+function chainOf(...names) {
+  // chainSlots is a getter reaching into manifest.preset.chain -- and it returns
+  // that array rather than a copy, which is exactly why splicing it in place
+  // persists. Building the manifest is therefore the honest fixture; assigning
+  // chainSlots would test a shape the real code never has.
+  const studio = makeStudio();
+  studio.manifest = {
+    name: 'p',
+    source: {},
+    preset: { name: 'p', chain: names.map((name) => ({ pedal: name, params: {} })) },
+    performance: {},
+    runtime: {},
+  };
+  studio.paint = () => {};
+  return studio;
+}
+const order = (studio) => studio.chainSlots.map((slot) => slot.pedal).join(' ');
+
+test('dragging the first card to the end', () => {
+  const studio = chainOf('a', 'b', 'c', 'd');
+  assert.equal(studio.moveSlot(0, 4), true);
+  assert.equal(order(studio), 'b c d a');
+});
+
+test('dragging the last card to the front', () => {
+  const studio = chainOf('a', 'b', 'c', 'd');
+  assert.equal(studio.moveSlot(3, 0), true);
+  assert.equal(order(studio), 'd a b c');
+});
+
+test('dragging one step down lands one step down, not two', () => {
+  // The off-by-one: without the `before > from` correction this gives 'b c a d'.
+  const studio = chainOf('a', 'b', 'c', 'd');
+  studio.moveSlot(0, 2);
+  assert.equal(order(studio), 'b a c d');
+});
+
+test('dragging one step up', () => {
+  const studio = chainOf('a', 'b', 'c', 'd');
+  studio.moveSlot(2, 1);
+  assert.equal(order(studio), 'a c b d');
+});
+
+test('dropping a card on itself changes nothing', () => {
+  const studio = chainOf('a', 'b', 'c');
+  assert.equal(studio.moveSlot(1, 1), false);
+  assert.equal(studio.moveSlot(1, 2), false);  // the gap just after itself
+  assert.equal(order(studio), 'a b c');
+});
+
+test('a no-op drag does not dirty the piece', () => {
+  // Otherwise picking a card up and putting it back asks you to save.
+  const studio = chainOf('a', 'b', 'c');
+  studio.dirty = false;
+  studio.moveSlot(1, 1);
+  assert.equal(studio.dirty, false);
+});
+
+test('a real move dirties the piece', () => {
+  // Position feeds each pedal's randomness, so a reorder is an edit of the
+  // sound, not a cosmetic tidy.
+  const studio = chainOf('a', 'b', 'c');
+  studio.dirty = false;
+  studio.moveSlot(0, 2);
+  assert.equal(studio.dirty, true);
+});
+
+test('an out-of-range source is refused rather than losing a pedal', () => {
+  const studio = chainOf('a', 'b');
+  assert.equal(studio.moveSlot(5, 0), false);
+  assert.equal(studio.moveSlot(-1, 0), false);
+  assert.equal(order(studio), 'a b');
+});
+
+test('a drag with no piece open is refused rather than throwing', () => {
+  // chainSlots reaches into the manifest, so this used to throw rather than
+  // return -- reachable by closing a piece mid-drag.
+  const studio = makeStudio();
+  studio.manifest = null;
+  assert.equal(studio.moveSlot(0, 1), false);
+});
+
+test('every permutation survives a move', () => {
+  // Cheap invariant: whatever the indices, nothing is lost or duplicated.
+  for (let from = 0; from < 5; from += 1) {
+    for (let before = 0; before <= 5; before += 1) {
+      const studio = chainOf('a', 'b', 'c', 'd', 'e');
+      studio.moveSlot(from, before);
+      assert.equal(
+        order(studio).split(' ').sort().join(''),
+        'abcde',
+        `from ${from} before ${before} lost or duplicated a pedal`,
+      );
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+console.log('save and render are told apart');
+
+test('the render button says it will save first when the piece is dirty', () => {
+  const studio = makeStudio();
+  studio.manifest = { name: 'p', source: {}, preset: {}, performance: {}, runtime: {} };
+  studio.dirty = true;
+  studio._paintHeader();
+  assert.equal(dom.elements.get('studio-render').textContent, 'save + render');
+});
+
+test('and just render when it is clean', () => {
+  const studio = makeStudio();
+  studio.manifest = { name: 'p', source: {}, preset: {}, performance: {}, runtime: {} };
+  studio.dirty = false;
+  studio._paintHeader();
+  assert.equal(dom.elements.get('studio-render').textContent, 'render');
+});
+
+test('save is only offered when there is something to save', () => {
+  const studio = makeStudio();
+  studio.manifest = { name: 'p', source: {}, preset: {}, performance: {}, runtime: {} };
+  studio.dirty = false;
+  studio._paintHeader();
+  assert.equal(dom.elements.get('studio-save').disabled, true);
+  studio.dirty = true;
+  studio._paintHeader();
+  assert.equal(dom.elements.get('studio-save').disabled, false);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
