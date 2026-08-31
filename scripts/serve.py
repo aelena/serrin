@@ -100,13 +100,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         print(f"  {fmt % args}")
 
     # -- helpers ------------------------------------------------------------
-    def _send_json(self, status: int, payload: dict) -> None:
-        body = json.dumps(payload).encode("utf-8")
+    def _send_json(
+        self,
+        status: int,
+        payload: dict,
+        headers: dict[str, str] | None = None,
+        body: bool = True,
+    ) -> None:
+        encoded = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(len(encoded) if body else 0))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
-        self.wfile.write(body)
+        if body:
+            self.wfile.write(encoded)
 
     def _read_json(self) -> dict:
         length = int(self.headers.get("Content-Length") or 0)
@@ -131,33 +140,61 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # Static, including /pieces/... which translate_path redirects.
             super().do_GET()
             return
-        params = parse_qs(query)
-        handlers = {
-            "/api/pieces": lambda: {"pieces": list_pieces_api(params.get("folder", [None])[0])},
-            "/api/piece": lambda: open_piece_api(params.get("folder", [None])[0]),
-            "/api/catalog": catalog_api,
-            "/api/source": lambda: source_api(
-                piece_folder=params.get("piece", [None])[0],
-                path=params.get("path", [None])[0],
-                kind=params.get("kind", [None])[0],
-            ),
-        }
-        self._dispatch(handlers.get(route))
+        self._dispatch(get_handlers(parse_qs(query)), route, "GET")
 
     def do_POST(self):  # noqa: N802 -- the base class spells it this way
         route = self.path.partition("?")[0].rstrip("/")
-        handlers = {
-            "/api/render": lambda: render_upload(self._read_json()),
-            "/api/piece": lambda: save_piece_api(self._read_json()),
-            "/api/piece/new": lambda: new_piece_api(self._read_json()),
-            "/api/piece/data": lambda: put_data_api(self._read_json()),
-            "/api/piece/graph": lambda: export_graph_api(self._read_json()),
-        }
-        self._dispatch(handlers.get(route))
+        self._dispatch(post_handlers(self._read_json), route, "POST")
 
-    def _dispatch(self, handler) -> None:
-        if handler is None:
+    def do_HEAD(self):  # noqa: N802
+        route = self.path.partition("?")[0].rstrip("/")
+        if not route.startswith("/api/"):
+            super().do_HEAD()
+            return
+        # Without this, HEAD on an API route fell through to the static handler
+        # and answered about a file called "api/source" -- text/html, and nothing
+        # to do with the endpoint. A HEAD has no body, so the honest answer is the
+        # status and the headers a GET would send.
+        status = self._method_error(route, "GET")
+        self._send_json(status or 200, {}, body=False)
+
+    def _method_error(self, route: str, method: str) -> int | None:
+        """404 if the route does not exist, 405 if it does but not this way."""
+        allowed = API_ROUTES.get(route)
+        if allowed is None:
             self._send_json(404, {"error": f"no such endpoint: {self.path}"})
+            return 404
+        if method not in allowed:
+            # The old code answered 404 here, with "no such endpoint" -- which is
+            # a lie about a route that exists, and cost an afternoon of looking
+            # for a missing endpoint that was never missing. 405 says "it is
+            # there, not like that", and Allow says how.
+            self._send_json(
+                405,
+                {
+                    "error": (
+                        f"{route} does not answer {method}; "
+                        f"it answers {', '.join(allowed)}"
+                    ),
+                    "allow": list(allowed),
+                },
+                headers={"Allow": ", ".join(allowed)},
+            )
+            return 405
+        return None
+
+    def _dispatch(self, handlers: dict, route: str, method: str) -> None:
+        if self._method_error(route, method) is not None:
+            return
+        handler = handlers.get(route)
+        if handler is None:
+            # Declared in API_ROUTES with no handler behind it. That is a wiring
+            # bug in serrin, not a caller mistake, so it is a 500 and it says so
+            # rather than pretending the route is absent.
+            self._send_json(
+                500,
+                {"error": f"{route} is declared for {method} but has no handler"},
+            )
             return
         try:
             self._send_json(200, handler())
@@ -172,6 +209,62 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # this is the author's own machine and hiding it helps nobody.
             traceback.print_exc()
             self._send_json(500, {"error": f"{type(exc).__name__}: {exc}"})
+
+
+# ---------------------------------------------------------------------------
+# the routes, declared once
+# ---------------------------------------------------------------------------
+#: Which routes answer GET, and which answer POST.
+#:
+#: Declared here rather than implied by the handler dictionaries because three
+#: things need to agree: the dispatcher, the 405 that tells a caller it used the
+#: wrong method, and the list the catalog advertises so the page can detect a
+#: server older than itself. Deriving all three from one table is the only way
+#: they cannot drift; a hand-maintained copy of a route list is a lie waiting
+#: for a release.
+GET_ROUTES = frozenset(
+    {"/api/catalog", "/api/source", "/api/pieces", "/api/piece"}
+)
+POST_ROUTES = frozenset(
+    {"/api/render", "/api/piece", "/api/piece/new", "/api/piece/data", "/api/piece/graph"}
+)
+
+#: route -> the methods it allows, in the order an ``Allow`` header wants them.
+API_ROUTES: dict[str, tuple[str, ...]] = {
+    route: tuple(
+        method
+        for method, routes in (("GET", GET_ROUTES), ("POST", POST_ROUTES))
+        if route in routes
+    )
+    for route in sorted(GET_ROUTES | POST_ROUTES)
+}
+
+
+def get_handlers(params: dict, read_json=None) -> dict:
+    """The GET handlers. A function so tests can check it against GET_ROUTES."""
+    return {
+        "/api/pieces": lambda: {"pieces": list_pieces_api(params.get("folder", [None])[0])},
+        "/api/piece": lambda: open_piece_api(params.get("folder", [None])[0]),
+        "/api/catalog": catalog_api,
+        "/api/source": lambda: source_api(
+            piece_folder=params.get("piece", [None])[0],
+            path=params.get("path", [None])[0],
+            kind=params.get("kind", [None])[0],
+        ),
+    }
+
+
+def post_handlers(read_json) -> dict:
+    """The POST handlers. ``read_json`` is called lazily, inside the handler, so
+    a bad body reports as 400 through the dispatcher rather than at wiring time.
+    """
+    return {
+        "/api/render": lambda: render_upload(read_json()),
+        "/api/piece": lambda: save_piece_api(read_json()),
+        "/api/piece/new": lambda: new_piece_api(read_json()),
+        "/api/piece/data": lambda: put_data_api(read_json()),
+        "/api/piece/graph": lambda: export_graph_api(read_json()),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -533,20 +626,13 @@ def catalog_api() -> dict:
         "max_voices": MAX_VOICES,
         "binding_kinds": list(BINDING_KINDS),
         "keymap_rows": [list(row) for row in DEFAULT_KEYMAP_ROWS],
-        # What this build actually serves. The page compares it against what it
-        # needs and says so if the server is older -- otherwise a renamed or added
-        # endpoint shows up as a bare 404 in the console and nothing in the UI,
-        # which is exactly how an afternoon gets lost.
-        "endpoints": [
-            "/api/catalog",
-            "/api/source",
-            "/api/pieces",
-            "/api/piece",
-            "/api/piece/new",
-            "/api/piece/data",
-            "/api/piece/graph",
-            "/api/render",
-        ],
+        # What this build actually serves, read off the route table rather than
+        # written out again. The page compares it against what it needs and says
+        # so if the server is older -- otherwise a renamed or added endpoint shows
+        # up as a bare 404 in the console and nothing in the UI, which is exactly
+        # how an afternoon gets lost.
+        "endpoints": sorted(API_ROUTES),
+        "routes": {route: list(methods) for route, methods in API_ROUTES.items()},
         "aggregations": ["mean", "max", "min", "sum", "first", "last", "range"],
         "loop_policies": ["vary", "loop", "pingpong", "once"],
         "voice_entry": ["variance", "columns", "sparse"],
@@ -624,10 +710,28 @@ def open_piece_api(folder: str | None) -> dict:
 
 
 def new_piece_api(payload: dict) -> dict:
+    """Create a piece. The name is required, and has to survive being a folder.
+
+    It used to default to "untitled", so a POST with an empty body created a
+    piece. An endpoint that makes something on the disk without being told what
+    to call it is a sharp edge: the accident is silent, it looks like a real
+    piece in the album, and the author did not ask for it.
+
+    A name that slugs away to nothing is refused for the same reason. Quietly
+    renaming "???" to "piece" is the same silent judgement in a smaller coat.
+    """
     from serrin.chain import Chain, default_chain  # noqa: PLC0415
     from serrin.piece import new_piece, slug  # noqa: PLC0415
 
-    name = slug(payload.get("name") or "untitled")
+    raw = str(payload.get("name") or "").strip()
+    if not raw:
+        raise ValueError("a new piece needs a name -- it becomes the folder name")
+    name = slug(raw, fallback="")
+    if not name:
+        raise ValueError(
+            f"{raw!r} leaves nothing usable as a folder name; "
+            "letters, digits, - and _ survive"
+        )
     folder = _piece_folder(payload.get("folder") or name, must_exist=False)
     preset = (
         Chain.from_json(payload["preset"]).to_json()

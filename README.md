@@ -921,7 +921,7 @@ key did two unrelated things depending on hidden state.
 python tests/run_all.py          # both suites, and they cross-check each other
 ```
 
-345 Python tests, 175 Node tests, plus a cross-language round trip. Weighted toward the two properties the aesthetic
+357 Python tests, 175 Node tests, plus a cross-language round trip. Weighted toward the two properties the aesthetic
 depends on: **determinism** (a promise that is not tested is a wish) and
 **invariants** (a pedal that breaks one fails hundreds of frames later, in the
 browser, which is a miserable way to find out).
@@ -932,10 +932,42 @@ from before an endpoint existed answers `404`, the browser logs one line, and th
 UI shows nothing at all — an afternoon of debugging a page that was fine. Now it
 says *the server is older than this page*, and names the fix.
 
+That list is not written twice. `GET_ROUTES` and `POST_ROUTES` are declared once
+and three things read them: the dispatcher, the `Allow` header, and the catalog.
+A hand-maintained copy of a route list is a lie waiting for a release — it would
+report a healthy server while the page still 404s — so the tests assert that
+nothing is declared without a handler or handled without being declared, which is
+the failure that actually happens, during a rename.
+
+The same table fixes a **404 that was lying**. A `GET` to a POST-only route used
+to answer `no such endpoint`, which is false about a route that exists and points
+debugging in exactly the wrong direction. It now answers `405` with `Allow`:
+
+```
+$ curl -i -X GET localhost:8000/api/render
+HTTP/1.1 405 Method Not Allowed
+Allow: POST
+{"error": "/api/render does not answer GET; it answers POST", "allow": ["POST"]}
+```
+
+`HEAD` on an API route used to fall through to the static handler and answer
+`text/html` about a file called `api/source`. It now answers what a `GET` would,
+without a body.
+
 The same reasoning covers three silent failures reported together as "nothing
 happened": choosing a file with no piece open, exporting a history with no piece
 open, and selecting two files where a piece takes one. All three now say what
 they did or would not do.
+
+And `POST /api/piece/new` **requires a name.** It used to default to `untitled`,
+so a request with an empty body created a piece — an endpoint that writes to the
+disk without being told what to call it is a sharp edge, because the accident is
+silent, it looks like a real piece in the album, and nobody asked for it. A name
+that slugs away to nothing (`???`) is refused for the same reason: quietly
+renaming it to `piece` is the same silent judgement in a smaller coat. Names that
+merely need cleaning are still cleaned and the result is shown — `Datos meteo
+UC50` becomes `Datos-meteo-UC50`, and `../escape` becomes `escape`, which is
+also why a name cannot walk out of the pieces root.
 
 `test_ui_boot.mjs` constructs the panel, studio and console against a minimal
 DOM stub and runs their first paint. It exists because a crash on load once

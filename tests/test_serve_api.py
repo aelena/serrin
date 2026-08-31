@@ -410,12 +410,14 @@ class TestCatalogEndpoint(unittest.TestCase):
         for route in ("/api/source", "/api/piece/data", "/api/render", "/api/pieces"):
             self.assertIn(route, endpoints)
 
-    def test_every_advertised_endpoint_is_actually_routed(self):
-        # A list that drifts from the router is worse than no list: it would
-        # report a healthy server while the page still 404s.
-        handler = (ROOT / "scripts" / "serve.py").read_text(encoding="utf-8")
-        for route in self.catalog["endpoints"]:
-            self.assertIn(f'"{route}"', handler, f"{route} is advertised but not routed")
+    def test_the_advertised_list_is_the_route_table(self):
+        # A hand-maintained copy of the route list is a lie waiting for a
+        # release: it would report a healthy server while the page still 404s.
+        self.assertEqual(sorted(self.catalog["endpoints"]), sorted(serve.API_ROUTES))
+
+    def test_it_says_which_methods_each_route_takes(self):
+        self.assertEqual(self.catalog["routes"]["/api/piece"], ["GET", "POST"])
+        self.assertEqual(self.catalog["routes"]["/api/render"], ["POST"])
 
     def test_it_is_json_serialisable(self):
         # It goes over the wire; a stray tuple or Path would 500 at request time.
@@ -558,6 +560,105 @@ class TestSourceEndpoint(unittest.TestCase):
         payload = serve.source_api(path=str(path))
         self.assertTrue(payload["problems"])
         self.assertIn("no data rows", chr(10).join(payload["problems"]))
+
+
+
+class TestRouteTable(unittest.TestCase):
+    """The table, the handlers and the advertised list have to agree.
+
+    They are three consumers of one declaration, and the whole point of the
+    declaration is that they cannot drift. So the test is not "does route X
+    exist" but "is anything declared without a handler, or handled without being
+    declared" -- which is the failure that actually happens, during a rename.
+    """
+
+    def test_every_declared_get_route_has_a_handler(self):
+        self.assertEqual(set(serve.get_handlers({})), set(serve.GET_ROUTES))
+
+    def test_every_declared_post_route_has_a_handler(self):
+        self.assertEqual(set(serve.post_handlers(lambda: {})), set(serve.POST_ROUTES))
+
+    def test_the_table_is_derived_from_both_sets(self):
+        self.assertEqual(set(serve.API_ROUTES), set(serve.GET_ROUTES | serve.POST_ROUTES))
+        for route, methods in serve.API_ROUTES.items():
+            self.assertEqual("GET" in methods, route in serve.GET_ROUTES)
+            self.assertEqual("POST" in methods, route in serve.POST_ROUTES)
+
+    def test_a_post_only_route_does_not_claim_to_take_a_get(self):
+        # This is the bug being fixed: /api/piece/data answered 404 "no such
+        # endpoint" to a GET, which is a lie about a route that exists -- and it
+        # sent an afternoon looking for an endpoint that was never missing.
+        for route in ("/api/piece/data", "/api/render", "/api/piece/new"):
+            self.assertNotIn("GET", serve.API_ROUTES[route])
+            self.assertIn("POST", serve.API_ROUTES[route])
+
+    def test_the_only_route_taking_both_is_the_one_that_reads_and_writes(self):
+        both = [r for r, m in serve.API_ROUTES.items() if len(m) == 2]
+        self.assertEqual(both, ["/api/piece"])
+
+
+class TestMethodErrors(unittest.TestCase):
+    """The status a wrong method gets, exercised through the handler class.
+
+    Driven with a fake socket rather than a real server: what is being tested is
+    the status line and the Allow header, and starting an HTTP server would test
+    http.server instead.
+    """
+
+    def _respond(self, path: str, method: str):
+        import io
+
+        class Fake(serve.Handler):
+            def __init__(self):  # noqa: D107 -- no socket, no setup
+                self.path = path
+                self.wfile = io.BytesIO()
+                self.sent = []
+                self.headers_out = {}
+
+            def send_response(self, status, message=None):
+                self.sent.append(status)
+
+            def send_header(self, name, value):
+                self.headers_out[name] = value
+
+            def end_headers(self):
+                pass
+
+        fake = Fake()
+        status = fake._method_error(path, method)
+        return status, fake
+
+    def test_a_wrong_method_is_405_not_404(self):
+        status, fake = self._respond("/api/piece/data", "GET")
+        self.assertEqual(status, 405)
+        self.assertEqual(fake.sent, [405])
+
+    def test_it_sends_an_allow_header_saying_how(self):
+        _, fake = self._respond("/api/render", "GET")
+        self.assertEqual(fake.headers_out["Allow"], "POST")
+
+    def test_the_body_names_the_methods_too(self):
+        # The Allow header is for machines; the page shows the JSON to a person.
+        _, fake = self._respond("/api/render", "GET")
+        payload = json.loads(fake.wfile.getvalue())
+        self.assertEqual(payload["allow"], ["POST"])
+        self.assertIn("does not answer GET", payload["error"])
+        self.assertIn("it answers POST", payload["error"])
+
+    def test_a_route_that_really_does_not_exist_is_still_404(self):
+        status, fake = self._respond("/api/nonsense", "GET")
+        self.assertEqual(status, 404)
+        self.assertIn("no such endpoint", json.loads(fake.wfile.getvalue())["error"])
+
+    def test_an_allowed_method_is_not_an_error_at_all(self):
+        status, fake = self._respond("/api/catalog", "GET")
+        self.assertIsNone(status)
+        self.assertEqual(fake.sent, [])
+
+    def test_both_methods_pass_on_the_route_that_takes_both(self):
+        for method in ("GET", "POST"):
+            status, _ = self._respond("/api/piece", method)
+            self.assertIsNone(status, f"{method} was refused on /api/piece")
 
 
 class TestSeedDispatch(unittest.TestCase):
